@@ -8,3 +8,8 @@ relaxedAutoImplicit = false
 
 [[lean_lib]]
 name = "Binsweep"
+
+[[require]]
+name = "Kraken"
+git = "https://github.com/AeneasVerif/kraken.git"
+rev = "2c56cbd30f4e0e93f87269400a6b34353aa0a765"

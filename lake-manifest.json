@@ -1,5 +1,16 @@
-{"version": "1.1.0",
+{"version": "1.2.0",
  "packagesDir": ".lake/packages",
- "packages": [],
+ "packages":
+ [{"url": "https://github.com/AeneasVerif/kraken.git",
+   "type": "git",
+   "subDir": null,
+   "scope": "",
+   "rev": "2c56cbd30f4e0e93f87269400a6b34353aa0a765",
+   "name": "Kraken",
+   "manifestFile": "lake-manifest.json",
+   "inputRev": "2c56cbd30f4e0e93f87269400a6b34353aa0a765",
+   "inherited": false,
+   "configFile": "lakefile.toml"}],
  "name": "Binsweep",
- "lakeDir": ".lake"}
+ "lakeDir": ".lake",
+ "fixedToolchain": false}
