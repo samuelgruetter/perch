@@ -1,0 +1,10 @@
+name = "Binsweep"
+version = "0.1.0"
+defaultTargets = ["Binsweep"]
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+
+[[lean_lib]]
+name = "Binsweep"
