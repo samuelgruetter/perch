@@ -1,4 +1,5 @@
 import Kraken.X64.Syntax
+import Binsweep.InstructionProperties
 
 /-!
 Implements the CFI policy described in sections 3.3 and 4.3 of the
@@ -47,50 +48,6 @@ def reg_base {w : Width} (r : Reg w) : Reg64 :=
 index or displacement. -/
 def deref_addr (r : Reg64) : AddrExpr :=
   { base := some (.reg r), idx := none }
-
-/-- The base registers written by `instr`, used to check whether an
-instruction can be skipped while walking the graph backwards because it is
-known not to disturb the register(s) currently being tracked. -/
-def written_regs (instr : Instr) : List Reg64 :=
-  match instr with
-  | .avx .. => []
-  | .regular _ _ op =>
-    match op with
-    | .mov dst _ | .add dst _ | .adc dst _ | .sub dst _ | .sbb dst _
-    | .and dst _ | .or dst _ | .xor dst _ | .not dst
-    | .shl dst _ | .shr dst _ | .sar dst _
-    | .rol dst _ | .ror dst _ | .rcl dst _ | .rcr dst _
-    | .shld dst _ _ | .shrd dst _ _
-    | .inc dst | .dec dst | .neg dst | .pop dst
-    | .movsx dst _ | .movzx dst _ =>
-        match dst with | .reg r => [reg_base r] | .mem _ => []
-    | .setcc _ dst =>
-        match dst with | .reg r => [reg_base r] | .mem _ => []
-    | .imul dst _ _ =>
-        match dst with | some (.reg r) => [reg_base r] | _ => []
-    | .lea r _ | .cmovcc _ r _ | .bswap r | .adcx r _ | .adox r _ =>
-        [reg_base r]
-    | .mulx hi lo _ => [reg_base hi, reg_base lo]
-    | .push _ | .test _ _ | .cmp _ _ | .mul _ | .imul1 _
-    | .jcc _ _ | .jmp _ | .call _ | .ret | .nop _ | .nopalign _ _ => []
-
-/-- Whether `instr` may modify the x86 condition flags (carry, zero, sign,
-overflow, ...). Used to check that nothing clobbers the flags between the
-`add` that computes a check value and the `jcc` that tests it. -/
-def modifies_flags (instr : Instr) : Bool :=
-  match instr with
-  | .avx .. => false
-  | .regular _ _ op =>
-    match op with
-    | .add _ _ | .adc _ _ | .adcx _ _ | .adox _ _
-    | .inc _ | .dec _ | .neg _ | .sub _ _ | .sbb _ _ | .cmp _ _
-    | .mul _ | .mulx .. | .imul1 _ | .imul ..
-    | .test _ _ | .and _ _ | .or _ _ | .xor _ _
-    | .shl _ _ | .shr _ _ | .sar _ _ | .rol _ _ | .ror _ _ | .rcl _ _ | .rcr _ _
-    | .shld _ _ _ | .shrd _ _ _ => true
-    | .mov _ _ | .movsx _ _ | .movzx _ _ | .push _ | .pop _
-    | .setcc _ _ | .cmovcc _ _ _ | .lea _ _ | .not _ | .bswap _
-    | .jcc _ _ | .jmp _ | .call _ | .ret | .nop _ | .nopalign _ _ => false
 
 /-- If `instr` is `mov target, src` for some 64-bit register `src`, returns
 `src`: `target`'s value then provably equals whatever `src` held just
