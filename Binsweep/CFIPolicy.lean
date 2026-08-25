@@ -35,7 +35,6 @@ def neForall {α : Type} (p : α → Bool) (xs : List α) : Bool :=
 
 -- TODO (now) termination: Some of the functions call themselves recursively, so the check might run into an infinite recursion if the control-flow graph contains a cycle. Therefore, binsweep uses a hard iteration cutoff at 48 instructions. So, when implementing the recursive functions in Lean, we will add an argument (fuel: Nat) to each function, which decreases by 1 in each recursive call, and we reject if the fuel reaches 0.
 
-/-
 def find_target_origin (g : Graph) (idx : InstrId)
   (target : Reg .W32) (target_read_src : Operand .W32) : Bool :=
   get_acceptable_instr g idx fun instr _predecessors =>
@@ -81,4 +80,3 @@ def cfi_check (g: Graph) (i: InstrId) :=
     instr.iclass is CALL or JMP &&
     g[i].register_width = 64 &&
     NEForall j in g[i].predecessors, find_branch g j g[i].target_register
--/
