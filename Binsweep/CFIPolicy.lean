@@ -23,31 +23,44 @@ def acceptable_instr (_instr : Instr) : Bool :=
 
 -- TODO (later) in general, what register widths are used/acceptable?
 
--- TODO (now) replace all usages by cfi_checking_stage
-def get_acceptable_instr (g : Graph) (idx : InstrId)
-    (check : Instr → List InstrId → Bool) : Bool :=
-  match g[idx]? with
-  | .some (InstrNode.mk instr predecessors) =>
-      acceptable_instr instr && check instr predecessors
-  | .none => false
-
 structure cfi_checker_context where
   -- The 64-bit register containing the indirect branch destination.
   -- When the matcher crosses `MOV target, source` while walking backward,
   -- `source` becomes the tracked target register.
-  target: Reg .W64
+  target : Reg .W64
   -- The 32-bit register to which `MAGIC` is added. Walking farther backward,
   -- the matcher requires this same register to receive the word loaded from
   -- the target address.
-  check_register: Reg .W32
-   -- The complete memory address used by a target read that is not
-   -- simply `[target]`. The matcher uses it to find an earlier `LEA` or
-   -- `MOV` proving that this address equals the branch target.
-  target_read_address: AddrExpr -- TODO (now) find_target_origin's addr argument becomes this
+  check_register : Reg .W32
+  -- The complete memory address used by a target read that is not
+  -- simply `[target]`. The matcher uses it to find an earlier `LEA` or
+  -- `MOV` proving that this address equals the branch target.
+  target_read_address : AddrExpr
 
-/-- Looks up `idx` in `g`, checks if it is acceptable, and runs `check` on
+/-- A `cfi_checker_context` to use where its fields haven't been
+determined yet -- e.g. `cfi_check` doesn't know the branch target until
+it has looked at the instruction at `idx`, and `check_register`/
+`target_read_address` aren't known until `find_add`/`find_target_read`
+find the check/address that determine them. Its field values are never
+read before being replaced with real ones, so what they are doesn't
+matter. -/
+def cfi_checker_context.dummy : cfi_checker_context :=
+  { target := .rax, check_register := .eax, target_read_address := { base := none, idx := none } }
+
+/-- Looks up `idx` in `g`, checks it is acceptable, and runs `check` on
 the instruction found there and its predecessors, with one less unit of
-fuel. `check` is handed `rec`, the same check but with decreased fuel. -/
+fuel. `check` is handed the decreased fuel, `rec` -- the same check, but
+with that decreased fuel, to call at every recursive step of a backward
+walk over `g` (typically at a different `idx` and, via `ctx`, possibly a
+different tracked register too; see `find_add`/`find_branch` below) --
+and `ctx` itself. A walk that needs to call into a *different* one of
+these checks partway through, with whatever fuel it has left, does that
+with the plain decreased fuel value instead of `rec` (see `find_add`
+calling `find_target_read`): `rec`'s recursive calls are exactly what
+must stay nameless for termination to hold, since `cfi_checking_stage`'s
+own recursive call, hidden inside `rec`, is otherwise invisible to the
+termination checker. Returns `false` once fuel runs out, `idx` is
+missing from `g`, or the instruction there isn't acceptable. -/
 def cfi_checking_stage
     (fuel : Nat)
     (g : Graph)
@@ -55,7 +68,7 @@ def cfi_checking_stage
     (ctx : cfi_checker_context)
     (check : Nat → (rec : InstrId → cfi_checker_context → Bool) →
              cfi_checker_context → Instr → List InstrId → Bool)
-     : Bool :=
+    : Bool :=
   match fuel with
   | 0 => false
   | fuel' + 1 =>
@@ -95,46 +108,48 @@ def copies_into (target : Reg .W64) (instr : Instr) : Option (Reg .W64) :=
       if dst == target then some src else none
   | _ => none
 
-/-- Checks whether, at instruction `idx`, register `target` is set up so
-that dereferencing it yields the same value as `addr`. This holds when
-`target` is loaded directly from `addr` (`lea target, addr`), or when the
-register underlying `addr` was itself round-tripped through `[target]`
-(loaded from `[target]`, or stored into `[target]`). x86 has no
-memory-to-memory `mov`, so the latter two cases are the closest faithful
-encoding of "the value at `addr` was copied from/to `[target]`". -/
-def find_target_origin (g : Graph) (idx : InstrId)
-    (target : Reg .W64) (addr : AddrExpr) : Bool :=
-  get_acceptable_instr g idx fun instr _predecessors =>
+/-- Checks whether, at instruction `idx`, register `ctx.target` is set up
+so that dereferencing it yields the same value as `ctx.target_read_address`.
+This holds when `ctx.target` is loaded directly from that address
+(`lea target, addr`), or when the register underlying it was itself
+round-tripped through `[target]` (loaded from `[target]`, or stored into
+`[target]`). x86 has no memory-to-memory `mov`, so the latter two cases
+are the closest faithful encoding of "the value at `addr` was copied
+from/to `[target]`". -/
+def find_target_origin (fuel : Nat) (g : Graph) (ctx : cfi_checker_context) (idx : InstrId) : Bool :=
+  cfi_checking_stage fuel g idx ctx (fun _fuel' _rec ctx instr _predecessors =>
     match instr with
     | .regular _ .W64 (.lea t src) =>
-        t == target && src == addr
+        t == ctx.target && src == ctx.target_read_address
     | .regular _ .W32 (.mov (.reg r) (.regOrMem (.mem src))) =>
-        src == deref_addr (reg_base target) && addr.base == some (.reg (reg_base r))
+        src == deref_addr (reg_base ctx.target) &&
+          ctx.target_read_address.base == some (.reg (reg_base r))
     | .regular _ .W32 (.mov (.mem dst) (.regOrMem (.reg r))) =>
-        dst == deref_addr (reg_base target) && addr.base == some (.reg (reg_base r))
-    | _ => false
+        dst == deref_addr (reg_base ctx.target) &&
+          ctx.target_read_address.base == some (.reg (reg_base r))
+    | _ => false)
 
-/-- Checks whether, walking backwards from instruction `idx`, `check_register`
-is guaranteed to hold the 32-bit value read from `[target]`, possibly after
-being routed through another register or memory location whose provenance
-traces back to `[target]` (see `find_target_origin`). Instructions that
-touch neither `target` nor `check_register` are skipped over.
+/-- Checks whether, walking backwards from instruction `idx`,
+`ctx.check_register` is guaranteed to hold the 32-bit value read from
+`[ctx.target]`, possibly after being routed through another register or
+memory location whose provenance traces back to `[ctx.target]` (see
+`find_target_origin`). Instructions that touch neither register are
+skipped over.
 
 `fuel` bounds how many instructions this walk may inspect, so that a cyclic
 control-flow graph cannot make the check loop forever; see `cfi_check`. -/
-def find_target_read (fuel : Nat) (g : Graph)
-    (target : Reg .W64) (check_register : Reg .W32) (idx : InstrId) : Bool :=
-  cfi_checking_stage fuel g (fun _fuel' rec instr predecessors (_ : Unit) =>
-      match instr with
-      | .regular _ .W32 (.mov (.reg cr) (.regOrMem (.mem addr))) =>
-          cr == check_register &&
-          (addr == deref_addr (reg_base target) ||
-           neForall (fun j => find_target_origin g j target addr) predecessors)
-      | _ =>
-          let written := written_regs instr
-          !(written.contains (reg_base target) || written.contains (reg_base check_register)) &&
-          neForall (fun j => rec j ()) predecessors)
-    idx ()
+def find_target_read (fuel : Nat) (g : Graph) (ctx : cfi_checker_context) (idx : InstrId) : Bool :=
+  cfi_checking_stage fuel g idx ctx (fun fuel' rec ctx instr predecessors =>
+    match instr with
+    | .regular _ .W32 (.mov (.reg cr) (.regOrMem (.mem addr))) =>
+        cr == ctx.check_register &&
+        (addr == deref_addr (reg_base ctx.target) ||
+         neForall (fun j => find_target_origin fuel' g { ctx with target_read_address := addr } j)
+           predecessors)
+    | _ =>
+        let written := written_regs instr
+        !(written.contains (reg_base ctx.target) || written.contains (reg_base ctx.check_register)) &&
+        neForall (fun j => rec j ctx) predecessors)
 
 /-- If `instr` is `add check_register, MAGIC` where `check_register` is the
 32-bit alias of `target`, returns `check_register`. -/
@@ -146,23 +161,22 @@ def is_magic_add (target : Reg .W64) (instr : Instr) : Option (Reg .W32) :=
   | _ => none
 
 /-- Checks whether, walking backwards from instruction `idx`, register
-`target` (or a register copied into it) is validated by adding `MAGIC` to
-the 32-bit value read from `[target]`, per `find_target_read`.
-Instructions that touch neither `target` nor the flags are skipped over,
-since the flags set by the `add` must survive unclobbered until the `jcc`
-that consumes them (see `find_branch`). -/
-def find_add (fuel : Nat) (g : Graph) (target : Reg .W64) (idx : InstrId) : Bool :=
-  cfi_checking_stage fuel g (fun fuel' rec instr predecessors target =>
-      match is_magic_add target instr with
-      | some check_register =>
-          neForall (fun j => find_target_read fuel' g target check_register j) predecessors
+`ctx.target` (or a register copied into it) is validated by adding `MAGIC`
+to the 32-bit value read from `[ctx.target]`, per `find_target_read`.
+Instructions that touch neither `ctx.target` nor the flags are skipped
+over, since the flags set by the `add` must survive unclobbered until the
+`jcc` that consumes them (see `find_branch`). -/
+def find_add (fuel : Nat) (g : Graph) (ctx : cfi_checker_context) (idx : InstrId) : Bool :=
+  cfi_checking_stage fuel g idx ctx (fun fuel' rec ctx instr predecessors =>
+    match is_magic_add ctx.target instr with
+    | some check_register =>
+        neForall (fun j => find_target_read fuel' g { ctx with check_register } j) predecessors
+    | none =>
+      match copies_into ctx.target instr with
+      | some src => neForall (fun j => rec j { ctx with target := src }) predecessors
       | none =>
-        match copies_into target instr with
-        | some src => neForall (fun j => rec j src) predecessors
-        | none =>
-            !((written_regs instr).contains (reg_base target) || modifies_flags instr) &&
-            neForall (fun j => rec j target) predecessors)
-    idx target
+          !((written_regs instr).contains (reg_base ctx.target) || modifies_flags instr) &&
+          neForall (fun j => rec j ctx) predecessors)
 
 /-- Whether `instr` is the conditional jump that is meant to trap when the
 `MAGIC`-based check (see `find_add`/`find_target_read`) fails. -/
@@ -172,25 +186,24 @@ def is_cfi_check_jcc (instr : Instr) : Bool :=
   | _ => false
 
 /-- Checks whether, walking backwards from instruction `idx`, register
-`target` (or a register copied into it) is validated by `find_add` before
-reaching the `jz`/`jnz` that acts on the check. Instructions that don't
-touch `target` are skipped over. -/
+`ctx.target` (or a register copied into it) is validated by `find_add`
+before reaching the `jz`/`jnz` that acts on the check. Instructions that
+don't touch `ctx.target` are skipped over. -/
 -- TODO (later) also confirm that the failure path of that `jz`/`jnz` actually
 -- traps (e.g. reaches an `int3`/`ud2`). This isn't checked yet: `Graph`/
 -- `InstrNode` only record predecessor edges, not the successors or labels
 -- needed to follow the failure path, and Kraken's `Operation` type has no
 -- trap instruction to look for in the first place.
-def find_branch (fuel : Nat) (g : Graph) (target : Reg .W64) (idx : InstrId) : Bool :=
-  cfi_checking_stage fuel g (fun fuel' rec instr predecessors target =>
-      if is_cfi_check_jcc instr then
-        neForall (fun j => find_add fuel' g target j) predecessors
-      else
-        match copies_into target instr with
-        | some src => neForall (fun j => rec j src) predecessors
-        | none =>
-            !((written_regs instr).contains (reg_base target)) &&
-            neForall (fun j => rec j target) predecessors)
-    idx target
+def find_branch (fuel : Nat) (g : Graph) (ctx : cfi_checker_context) (idx : InstrId) : Bool :=
+  cfi_checking_stage fuel g idx ctx (fun fuel' rec ctx instr predecessors =>
+    if is_cfi_check_jcc instr then
+      neForall (fun j => find_add fuel' g ctx j) predecessors
+    else
+      match copies_into ctx.target instr with
+      | some src => neForall (fun j => rec j { ctx with target := src }) predecessors
+      | none =>
+          !((written_regs instr).contains (reg_base ctx.target)) &&
+          neForall (fun j => rec j ctx) predecessors)
 
 -- Binsweep enforces a hard cutoff of 48 instructions per backward walk, to
 -- guarantee termination even when the control-flow graph contains cycles.
@@ -200,8 +213,9 @@ def cfi_check_fuel : Nat := 48
 register `target` is accepted only if every path leading to it passes
 through a validated `find_branch` check on `target`. -/
 def cfi_check (g : Graph) (idx : InstrId) : Bool :=
-  get_acceptable_instr g idx fun instr predecessors =>
+  cfi_checking_stage 1 g idx cfi_checker_context.dummy (fun _fuel' _rec _ctx instr predecessors =>
     match instr with
     | .regular _ _ (.call (.reg target)) | .regular _ _ (.jmp (.reg target)) =>
-        neForall (fun j => find_branch cfi_check_fuel g target j) predecessors
-    | _ => false
+        neForall (fun j => find_branch cfi_check_fuel g { cfi_checker_context.dummy with target } j)
+          predecessors
+    | _ => false)
