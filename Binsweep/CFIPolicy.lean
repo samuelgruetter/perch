@@ -23,6 +23,7 @@ def acceptable_instr (_instr : Instr) : Bool :=
 
 -- TODO (later) in general, what register widths are used/acceptable?
 
+-- TODO (now) replace all usages by cfi_checking_stage
 def get_acceptable_instr (g : Graph) (idx : InstrId)
     (check : Instr → List InstrId → Bool) : Bool :=
   match g[idx]? with
@@ -30,49 +31,39 @@ def get_acceptable_instr (g : Graph) (idx : InstrId)
       acceptable_instr instr && check instr predecessors
   | .none => false
 
-/-- A fuel-bounded fixpoint for `Bool`-valued functions: running out of
-fuel makes the whole thing `false`. `f` is handed the decreased fuel
-together with `rec`, itself run with that decreased fuel, to use for
-every recursive call.
+structure cfi_checker_context where
+  -- The 64-bit register containing the indirect branch destination.
+  -- When the matcher crosses `MOV target, source` while walking backward,
+  -- `source` becomes the tracked target register.
+  target: Reg .W64
+  -- The 32-bit register to which `MAGIC` is added. Walking farther backward,
+  -- the matcher requires this same register to receive the word loaded from
+  -- the target address.
+  check_register: Reg .W32
+   -- The complete memory address used by a target read that is not
+   -- simply `[target]`. The matcher uses it to find an earlier `LEA` or
+   -- `MOV` proving that this address equals the branch target.
+  target_read_address: AddrExpr -- TODO (now) find_target_origin's addr argument becomes this
 
-`fuelRec` folds away the `match fuel with | 0 => .. | fuel' + 1 => ..`
-bookkeeping once and for all -- any function built from it below, by
-calling `rec` for every recursive step instead of naming itself, never
-mentions its own name recursively, so it needs no termination proof of
-its own; only `fuelRec`'s single, directly structural self-call on
-`fuel` does. -/
-def fuelRec {α : Type} (fuel : Nat) (f : Nat → (rec : α → Bool) → α → Bool) : α → Bool :=
-  match fuel with
-  | 0 => fun _ => false
-  | fuel' + 1 => f fuel' (fuelRec fuel' f)
-
-/-- Looks up `idx` in `g`, checks it is acceptable, and runs `check` on
+/-- Looks up `idx` in `g`, checks if it is acceptable, and runs `check` on
 the instruction found there and its predecessors, with one less unit of
-fuel. `check` is handed `rec`, the same check with that decreased fuel,
-to call at every recursive step of a backward walk over `g` -- typically
-at a different `idx`, and, via the auxiliary state `x`, possibly with
-something else changed too, e.g. a renamed target register (see
-`find_add`/`find_branch` below, where `rec`'s second argument is what
-lets them do this without recursing under a different name themselves).
-
-A walk that needs to call into a *different* one of these checks
-partway through, with whatever fuel it has left, cannot do that through
-`rec` (whose recursive calls are exactly what must stay nameless for
-termination to hold above); `check` is handed the plain decreased fuel
-value for that, alongside `rec`. Returns `false` once fuel runs out,
-`idx` is missing from `g`, or the instruction there isn't acceptable. -/
-def cfi_checking_stage {β : Type} (fuel : Nat) (g : Graph)
-    (check : Nat → (rec : InstrId → β → Bool) → Instr → List InstrId → β → Bool) :
-    InstrId → β → Bool :=
-  fun idx x =>
-    fuelRec fuel
-      (fun fuel' rec (idx, x) =>
-        match g[idx]? with
-        | .some (InstrNode.mk instr predecessors) =>
-            acceptable_instr instr &&
-              check fuel' (fun idx' x' => rec (idx', x')) instr predecessors x
-        | .none => false)
-      (idx, x)
+fuel. `check` is handed `rec`, the same check but with decreased fuel. -/
+def cfi_checking_stage
+    (fuel : Nat)
+    (g : Graph)
+    (idx : InstrId)
+    (ctx : cfi_checker_context)
+    (check : Nat → (rec : InstrId → cfi_checker_context → Bool) →
+             cfi_checker_context → Instr → List InstrId → Bool)
+     : Bool :=
+  match fuel with
+  | 0 => false
+  | fuel' + 1 =>
+    match g[idx]? with
+    | .some (InstrNode.mk instr predecessors) =>
+        acceptable_instr instr &&
+          check fuel' (fun idx ctx => cfi_checking_stage fuel' g idx ctx check) ctx instr predecessors
+    | .none => false
 
 -- non-empty forall
 def neForall {α : Type} (p : α → Bool) (xs : List α) : Bool :=
@@ -133,8 +124,7 @@ touch neither `target` nor `check_register` are skipped over.
 control-flow graph cannot make the check loop forever; see `cfi_check`. -/
 def find_target_read (fuel : Nat) (g : Graph)
     (target : Reg .W64) (check_register : Reg .W32) (idx : InstrId) : Bool :=
-  cfi_checking_stage fuel g
-    (fun _fuel' rec instr predecessors (_ : Unit) =>
+  cfi_checking_stage fuel g (fun _fuel' rec instr predecessors (_ : Unit) =>
       match instr with
       | .regular _ .W32 (.mov (.reg cr) (.regOrMem (.mem addr))) =>
           cr == check_register &&
@@ -162,8 +152,7 @@ Instructions that touch neither `target` nor the flags are skipped over,
 since the flags set by the `add` must survive unclobbered until the `jcc`
 that consumes them (see `find_branch`). -/
 def find_add (fuel : Nat) (g : Graph) (target : Reg .W64) (idx : InstrId) : Bool :=
-  cfi_checking_stage fuel g
-    (fun fuel' rec instr predecessors target =>
+  cfi_checking_stage fuel g (fun fuel' rec instr predecessors target =>
       match is_magic_add target instr with
       | some check_register =>
           neForall (fun j => find_target_read fuel' g target check_register j) predecessors
@@ -192,8 +181,7 @@ touch `target` are skipped over. -/
 -- needed to follow the failure path, and Kraken's `Operation` type has no
 -- trap instruction to look for in the first place.
 def find_branch (fuel : Nat) (g : Graph) (target : Reg .W64) (idx : InstrId) : Bool :=
-  cfi_checking_stage fuel g
-    (fun fuel' rec instr predecessors target =>
+  cfi_checking_stage fuel g (fun fuel' rec instr predecessors target =>
       if is_cfi_check_jcc instr then
         neForall (fun j => find_add fuel' g target j) predecessors
       else
