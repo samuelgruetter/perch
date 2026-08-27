@@ -598,14 +598,14 @@ running an operation it reports as not modifying the flags really does
 leave `status` unchanged, for every state its execution can reach.
 `next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
 how Kraken's own `step1` observes a single instruction's effect. -/
-theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
-    (op : Operation w) (p : Std.Rco Int64) (s : MachineData)
+theorem modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
+    (op : Operation w) (p : Std.Rco Int64) (initial final : MachineData)
+    (arbitrary_pc final_pc : Int64)
     (h : modifies_flags (.regular address_size.address_size w op) = false)
-    (final : MachineState)
-    (hfinal : Effects.Exists
-      (Operation.interp op p s (fun s' => .done (s', (0 : Int64))) (fun pc s' => .done (s', pc)))
-      final) :
-    final.1.status = s.status := by
+    (hfinal : (op.interp p initial
+                  (fun s' => .done (s', arbitrary_pc))
+                  (fun pc s' => .done (s', pc))).Exists (final, final_pc)) :
+    final.status = initial.status := by
   sorry
 
 /-- `Reg64`'s derived `BEq` is decided pointwise, so a failed comparison
@@ -1120,9 +1120,12 @@ theorem Instr.written_regs_sound [Labels] (i : Instr) (p : Std.Rco Int64) (s : M
 /-- `written_regs` is sound for every `Instr`: `.regular` instructions are
 covered by `Operation.written_regs_sound`, and `.avx` instructions never
 touch any general-purpose register. -/
-theorem Instr.written_regs_sound [Labels] (i : Instr) (p : Std.Rco Int64) (s : MachineData)
-    (r : Reg64) (hr : (written_regs i).contains r = false) (final : MachineState)
-    (hfinal : Effects.Exists
-      (i.interp s p (fun s' => .done (s', (0 : Int64))) (fun pc s' => .done (s', pc))) final) :
-    final.1.regs.get64 r = s.regs.get64 r := by
+theorem written_regs_sound [Labels] (i : Instr) (p : Std.Rco Int64)
+    (initial final : MachineData)
+    (r : Reg64) (hr : (written_regs i).contains r = false)
+    (final_pc arbitrary_pc : Int64)
+    (hfinal : (i.interp initial p
+                   (fun s' => .done (s', arbitrary_pc))
+                   (fun pc s' => .done (s', pc))).Exists (final, final_pc)) :
+    final.regs.get64 r = initial.regs.get64 r := by
   sorry
