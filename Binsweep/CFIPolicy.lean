@@ -30,6 +30,39 @@ def get_acceptable_instr (g : Graph) (idx : InstrId)
       acceptable_instr instr && check instr predecessors
   | .none => false
 
+/-- `cfi_checking_stage g idx fuel fun instr predecessors fuel => body`
+looks up `idx` in `g`, checks it is acceptable, and evaluates `body` with
+`instr` and `predecessors` bound to what was found there, and (note the
+deliberate shadowing) `fuel` rebound to one less than before. It is for
+the functions below that combine `get_acceptable_instr` with a fuel check
+that decreases on every recursive call, so that a cyclic graph can't make
+the walk loop forever.
+
+This has to be a macro, expanding to a literal `match fuel with | 0 => ..
+| fuel' + 1 => ..` at the use site, rather than a plain function: Lean's
+termination checker only recognizes a recursive call as structurally
+decreasing when it can see the decreasing argument come from a pattern
+match on the function's own arguments. A helper *function* hides that
+match behind a call, however that function is marked (a plain `def` and
+an `abbrev` -- i.e. a `@[reducible] def`, unfolded eagerly elsewhere --
+both fail the same way): the `decreasing_by` goal ends up asking to prove
+`fuel < fuel✝` with no hypothesis relating the two, since the only place
+that relation is visible is inside the helper's own body, which the
+termination checker does not unfold. Expanding to the match inline, before
+elaboration, sidesteps the issue entirely: each function ends up exactly
+as if it had spelled out the match by hand. -/
+syntax "cfi_checking_stage " term:max ppSpace term:max ppSpace term:max ppSpace
+  "fun " ident ppSpace ident ppSpace ident " => " term : term
+
+macro_rules
+  | `(cfi_checking_stage $g $idx $fuel fun $instr $predecessors $fuel' => $body) =>
+    `(match $fuel:term with
+      | 0 => false
+      | $fuel' + 1 =>
+        match ($g)[$idx]? with
+        | .some (InstrNode.mk $instr $predecessors) => acceptable_instr $instr && ($body)
+        | .none => false)
+
 -- non-empty forall
 def neForall {α : Type} (p : α → Bool) (xs : List α) : Bool :=
   !xs.isEmpty && xs.all p
@@ -89,19 +122,16 @@ touch neither `target` nor `check_register` are skipped over.
 control-flow graph cannot make the check loop forever; see `cfi_check`. -/
 def find_target_read (g : Graph) (idx : InstrId)
     (target : Reg .W64) (check_register : Reg .W32) (fuel : Nat) : Bool :=
-  match fuel with
-  | 0 => false
-  | fuel' + 1 =>
-    get_acceptable_instr g idx fun instr predecessors =>
-      match instr with
-      | .regular _ .W32 (.mov (.reg cr) (.regOrMem (.mem addr))) =>
-          cr == check_register &&
-          (addr == deref_addr (reg_base target) ||
-           neForall (fun j => find_target_origin g j target addr) predecessors)
-      | _ =>
-          let written := written_regs instr
-          !(written.contains (reg_base target) || written.contains (reg_base check_register)) &&
-          neForall (fun j => find_target_read g j target check_register fuel') predecessors
+  cfi_checking_stage g idx fuel fun instr predecessors fuel =>
+    match instr with
+    | .regular _ .W32 (.mov (.reg cr) (.regOrMem (.mem addr))) =>
+        cr == check_register &&
+        (addr == deref_addr (reg_base target) ||
+         neForall (fun j => find_target_origin g j target addr) predecessors)
+    | _ =>
+        let written := written_regs instr
+        !(written.contains (reg_base target) || written.contains (reg_base check_register)) &&
+        neForall (fun j => find_target_read g j target check_register fuel) predecessors
 
 /-- If `instr` is `add check_register, MAGIC` where `check_register` is the
 32-bit alias of `target`, returns `check_register`. -/
@@ -119,19 +149,16 @@ Instructions that touch neither `target` nor the flags are skipped over,
 since the flags set by the `add` must survive unclobbered until the `jcc`
 that consumes them (see `find_branch`). -/
 def find_add (g : Graph) (idx : InstrId) (target : Reg .W64) (fuel : Nat) : Bool :=
-  match fuel with
-  | 0 => false
-  | fuel' + 1 =>
-    get_acceptable_instr g idx fun instr predecessors =>
-      match is_magic_add target instr with
-      | some check_register =>
-          neForall (fun j => find_target_read g j target check_register fuel') predecessors
+  cfi_checking_stage g idx fuel fun instr predecessors fuel =>
+    match is_magic_add target instr with
+    | some check_register =>
+        neForall (fun j => find_target_read g j target check_register fuel) predecessors
+    | none =>
+      match copies_into target instr with
+      | some src => neForall (fun j => find_add g j src fuel) predecessors
       | none =>
-        match copies_into target instr with
-        | some src => neForall (fun j => find_add g j src fuel') predecessors
-        | none =>
-            !((written_regs instr).contains (reg_base target) || modifies_flags instr) &&
-            neForall (fun j => find_add g j target fuel') predecessors
+          !((written_regs instr).contains (reg_base target) || modifies_flags instr) &&
+          neForall (fun j => find_add g j target fuel) predecessors
 
 /-- Whether `instr` is the conditional jump that is meant to trap when the
 `MAGIC`-based check (see `find_add`/`find_target_read`) fails. -/
@@ -150,18 +177,15 @@ touch `target` are skipped over. -/
 -- needed to follow the failure path, and Kraken's `Operation` type has no
 -- trap instruction to look for in the first place.
 def find_branch (g : Graph) (idx : InstrId) (target : Reg .W64) (fuel : Nat) : Bool :=
-  match fuel with
-  | 0 => false
-  | fuel' + 1 =>
-    get_acceptable_instr g idx fun instr predecessors =>
-      if is_cfi_check_jcc instr then
-        neForall (fun j => find_add g j target fuel') predecessors
-      else
-        match copies_into target instr with
-        | some src => neForall (fun j => find_branch g j src fuel') predecessors
-        | none =>
-            !((written_regs instr).contains (reg_base target)) &&
-            neForall (fun j => find_branch g j target fuel') predecessors
+  cfi_checking_stage g idx fuel fun instr predecessors fuel =>
+    if is_cfi_check_jcc instr then
+      neForall (fun j => find_add g j target fuel) predecessors
+    else
+      match copies_into target instr with
+      | some src => neForall (fun j => find_branch g j src fuel) predecessors
+      | none =>
+          !((written_regs instr).contains (reg_base target)) &&
+          neForall (fun j => find_branch g j target fuel) predecessors
 
 -- Binsweep enforces a hard cutoff of 48 instructions per backward walk, to
 -- guarantee termination even when the control-flow graph contains cycles.
