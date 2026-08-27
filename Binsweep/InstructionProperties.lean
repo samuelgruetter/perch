@@ -226,17 +226,135 @@ state down exactly to `a`. -/
 theorem Effects.exists_done {a final : MachineState} (h : Effects.Exists (.done a) final) :
     final = a := h.symm
 
+/-- Reading an AVX memory operand never touches `regs`/`status` (only
+`dmem` may differ, via an out-of-range access, and even then the failure
+cases -- unaligned, not backed by `dmem` -- can't reach a `.done`). -/
+theorem MachineData.loadAvx_reaches {w : AvxWidth} [Labels] [AddressSize]
+    (s : MachineData) (addr : BitVec 64) (ret : w.type → MachineData → Effects) (checkAlign : Bool)
+    (final : MachineState) (hfinal : Effects.Exists (MachineData.loadAvx s addr w ret checkAlign) final) :
+    ∃ (a : w.type), Effects.Exists (ret a s) final := by
+  simp only [MachineData.loadAvx] at hfinal
+  split at hfinal
+  · exact hfinal.elim
+  · simp only [Effects.Exists] at hfinal
+    cases hl : Mem.loadInt s.dmem addr w.bytes with
+    | some i => rw [hl] at hfinal; exact ⟨_, hfinal⟩
+    | none => rw [hl] at hfinal; exact hfinal.elim
+
+/-- Reading an `AvxRegOrMem` operand hands its continuation a state whose
+`regs` is unchanged. -/
+theorem AvxRegOrMem.interp_reaches {w : AvxWidth} [Labels] [AddressSize]
+    (o : AvxRegOrMem w) (s : MachineData) (p : Std.Rco Int64) (ret : w.type → MachineData → Effects)
+    (checkAlign : Bool) (final : MachineState) (hfinal : Effects.Exists (o.interp s p ret checkAlign) final) :
+    ∃ (a : w.type) (s' : MachineData), s'.regs = s.regs ∧ Effects.Exists (ret a s') final := by
+  cases o with
+  | avx r => exact ⟨_, s, rfl, hfinal⟩
+  | mem a =>
+      simp only [AvxRegOrMem.interp] at hfinal
+      obtain ⟨v, hfinal⟩ := MachineData.loadAvx_reaches s _ ret checkAlign final hfinal
+      exact ⟨v, s, rfl, hfinal⟩
+
+/-- Storing to an AVX memory address never touches `regs` (only `dmem`
+differs, mirroring `MachineData.store_reaches`). -/
+theorem MachineData.storeAvx_reaches {w : AvxWidth} [Labels] [AddressSize]
+    (s : MachineData) (addr : BitVec 64) (v : w.type) (ret : MachineData → Effects) (checkAlign : Bool)
+    (final : MachineState) (hfinal : Effects.Exists (s.storeAvx addr v ret checkAlign) final) :
+    ∃ s', s'.regs = s.regs ∧ Effects.Exists (ret s') final := by
+  simp only [MachineData.storeAvx] at hfinal
+  split at hfinal
+  · exact hfinal.elim
+  · simp only [Effects.Exists] at hfinal
+    cases hl : Mem.loadInt s.dmem addr w.bytes with
+    | some _ =>
+        rw [hl] at hfinal
+        exact ⟨{ s with dmem := Mem.storeInt s.dmem addr w.bytes v.toInt }, rfl, hfinal⟩
+    | none => rw [hl] at hfinal; exact hfinal.elim
+
+/-- Writing an `AvxDst` (as a "new-style" register, via `setAvx`) never
+changes `regs`, whether it lands in a `zmm` register or in memory. -/
+theorem MachineData.setAvx_reaches {w : AvxWidth} [Labels] [AddressSize]
+    (s : MachineData) (d : AvxDst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects)
+    (checkAlign : Bool) (final : MachineState)
+    (hfinal : Effects.Exists (MachineData.setAvx s d v p ret checkAlign) final) :
+    ∃ s', s'.regs = s.regs ∧ Effects.Exists (ret s') final := by
+  cases d with
+  | avx r =>
+      simp only [MachineData.setAvx] at hfinal
+      exact ⟨s.setAvxReg r v, rfl, hfinal⟩
+  | mem a =>
+      simp only [MachineData.setAvx] at hfinal
+      exact MachineData.storeAvx_reaches s _ v ret checkAlign final hfinal
+
+/-- Writing an `AvxDst` (as a legacy SSE register, via `setAvxLegacy`)
+never changes `regs`, whether it lands in a `zmm` register or in
+memory. -/
+theorem MachineData.setAvxLegacy_reaches {w : AvxWidth} [Labels] [AddressSize]
+    (s : MachineData) (d : AvxDst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects)
+    (checkAlign : Bool) (final : MachineState)
+    (hfinal : Effects.Exists (MachineData.setAvxLegacy s d v p ret checkAlign) final) :
+    ∃ s', s'.regs = s.regs ∧ Effects.Exists (ret s') final := by
+  cases d with
+  | avx r =>
+      simp only [MachineData.setAvxLegacy] at hfinal
+      exact ⟨s.setAvxLegacyReg r v, rfl, hfinal⟩
+  | mem a =>
+      simp only [MachineData.setAvxLegacy] at hfinal
+      exact MachineData.storeAvx_reaches s _ v ret checkAlign final hfinal
+
+/-- No `AvxOperation` ever touches `regs`: each of the five AVX
+instructions only reads/writes `zmm` registers or `dmem`. Used to prove
+`written_regs_sound`'s `.avx` case, where `written_regs` unconditionally
+reports `[]`. -/
+theorem AvxOperation.regs_unchanged [Labels] [address_size : AddressSize] {w : AvxWidth}
+    (op : AvxOperation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
+    (final : MachineState)
+    (hfinal : Effects.Exists (AvxOperation.interp op p s (fun s' => .done (s', arbitrary_pc))) final) :
+    final.1.regs = s.regs := by
+  cases op with
+  | movups dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', hregs', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hregs', hregs]
+  | vmovups dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', hregs', hfinal⟩ := MachineData.setAvx_reaches s' dst a p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hregs', hregs]
+  | movaps dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨s'', hregs', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ true final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hregs', hregs]
+  | subps dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨b, s'', hregs', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
+      obtain ⟨s''', hregs'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hregs'', hregs', hregs]
+  | addps dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨b, s'', hregs', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
+      obtain ⟨s''', hregs'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hregs'', hregs', hregs]
+
 /-- `modifies_flags` is a sound over-approximation of `Operation.interp`:
 running an operation it reports as not modifying the flags really does
 leave `status` unchanged, for every state its execution can reach.
 `next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
 how Kraken's own `step1` observes a single instruction's effect. -/
 theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
-    (op : Operation w) (p : Std.Rco Int64) (s : MachineData)
+    (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
     (h : modifies_flags (.regular address_size.address_size w op) = false)
     (final : MachineState)
     (hfinal : Effects.Exists
-        (Operation.interp op p s (fun s' => .done (s', (0 : Int64))) (fun pc s' => .done (s', pc)))
+        (Operation.interp op p s (fun s' => .done (s', arbitrary_pc)) (fun pc s' => .done (s', pc)))
         final) :
     final.1.status = s.status := by
   cases op with
@@ -350,11 +468,11 @@ running an operation can only change `regs.get64 r` for a register `r`
 it reports as written. Same setup as `modifies_flags_sound` (`next`/`jmp`
 fixed to `Effects.done`). -/
 theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : Width}
-    (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (r : Reg64)
+    (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64) (r : Reg64)
     (hr : (written_regs (.regular address_size.address_size w op)).contains r = false)
     (final : MachineState)
     (hfinal : Effects.Exists
-        (Operation.interp op p s (fun s' => .done (s', (0 : Int64))) (fun pc s' => .done (s', pc)))
+        (Operation.interp op p s (fun s' => .done (s', arbitrary_pc)) (fun pc s' => .done (s', pc)))
         final) :
     final.1.regs.get64 r = s.regs.get64 r := by
   cases op with
@@ -754,3 +872,41 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       simp [Reg64s.get64_set64_of_ne hne]
   | nop n => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
   | nopalign a b => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
+
+/-- `modifies_flags` is a sound over-approximation of `Operation.interp`:
+running an operation it reports as not modifying the flags really does
+leave `status` unchanged, for every state its execution can reach.
+`next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
+how Kraken's own `step1` observes a single instruction's effect. -/
+theorem modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
+    (op : Operation w) (p : Std.Rco Int64) (initial final : MachineData)
+    (arbitrary_pc final_pc : Int64)
+    (h : modifies_flags (.regular address_size.address_size w op) = false)
+    (hfinal : (op.interp p initial
+                  (fun s' => .done (s', arbitrary_pc))
+                  (fun pc s' => .done (s', pc))).Exists (final, final_pc)) :
+    final.status = initial.status :=
+  Operation.modifies_flags_sound op p initial arbitrary_pc h (final, final_pc) hfinal
+
+/-- `written_regs` is sound for every `Instr`: `.regular` instructions are
+covered by `Operation.written_regs_sound`, and `.avx` instructions never
+touch any general-purpose register. -/
+theorem written_regs_sound [Labels] (i : Instr) (p : Std.Rco Int64)
+    (initial final : MachineData)
+    (r : Reg64) (hr : (written_regs i).contains r = false)
+    (final_pc arbitrary_pc : Int64)
+    (hfinal : (i.interp initial p
+                   (fun s' => .done (s', arbitrary_pc))
+                   (fun pc s' => .done (s', pc))).Exists (final, final_pc)) :
+    final.regs.get64 r = initial.regs.get64 r := by
+  cases i with
+  | regular addr_sz op_sz op =>
+      simp only [Instr.interp, Effects.Exists] at hfinal
+      exact Operation.written_regs_sound (address_size := .mk addr_sz) op p initial arbitrary_pc r hr
+        (final, final_pc) hfinal
+  | avx addr_sz op_sz op =>
+      simp only [Instr.interp, Effects.Exists] at hfinal
+      have hregs : final.regs = initial.regs :=
+        AvxOperation.regs_unchanged (address_size := .mk addr_sz) op p initial arbitrary_pc
+          (final, final_pc) hfinal
+      rw [hregs]
