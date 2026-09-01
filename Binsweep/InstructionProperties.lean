@@ -349,13 +349,18 @@ leave `status` unchanged, for every state its execution can reach.
 `next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
 how Kraken's own `step1` observes a single instruction's effect.
 
-Only the constructors `modifies_flags` reports `false` for get their
-own case; every other constructor -- i.e. every one `modifies_flags`
-reports `true` for -- falls through to the final wildcard case, which
-derives a contradiction from `h` without needing to know which
-constructor `op` actually is. This means a newly-added constructor
-that modifies the flags needs no change here at all; only one that
-*doesn't* would need a new named case above the wildcard. -/
+Rather than one totally separate tactic block per constructor, this
+groups constructors by *shape* under a single `cases ... with` clause
+(so field names still come from the pattern, no separate lookup step
+needed) and, within a group, uses `first` to try whichever `*_reaches`
+lemma matches the field's actual type (Rocq's `destruct op; solve
+[eauto using lemma1 | eauto using lemma2 | ...]`). Every
+flag-modifying constructor (`add`, `shl`, `mul`, ...) falls through to
+the trailing wildcard, which derives a contradiction from `h` without
+even knowing which constructor `op` is; this means a newly-added
+flag-modifying constructor needs no change here at all, and one that
+joins an existing read/write shape just joins that shape's pattern
+list instead of getting a new case. -/
 theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
     (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
     (h : modifies_flags (.regular address_size.address_size w op) = false)
@@ -365,15 +370,19 @@ theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w 
         final) :
     final.1.status = s.status := by
   cases op with
-  | mov dst src =>
+  -- mov (reads `src : Operand`) and movsx/movzx (read `src : RegOrMem`):
+  -- read one operand, write it (or the read's result) to `dst`.
+  | mov dst src | movsx dst src | movzx dst src =>
       simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
-      obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' a p _ final hfinal
+      first
+      | obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
+      | obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
+      obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
       rw [Effects.exists_done hfinal]
       exact hstatus'.trans hstatus
-  | movsx dst src | movzx dst src =>
+  | not dst =>
       simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
+      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
       obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
       rw [Effects.exists_done hfinal]
       exact hstatus'.trans hstatus
@@ -403,12 +412,6 @@ theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w 
       simp only [Operation.interp] at hfinal
       rw [Effects.exists_done hfinal]
       exact MachineData.setReg_status s dst _
-  | not dst =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'.trans hstatus
   | bswap dst =>
       simp only [Operation.interp] at hfinal
       cases w with
@@ -436,9 +439,10 @@ theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w 
       rw [Effects.exists_done hfinal]
   | nop n | nopalign n _ =>
       simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
-  -- Every other constructor is one `modifies_flags` already reports `true`
-  -- for, contradicting `h`; this covers them without listing them (and
-  -- automatically covers a newly-added flag-modifying instruction too).
+  -- Every other constructor is one `modifies_flags` already reports
+  -- `true` for, contradicting `h`; this covers them without listing
+  -- them (and automatically covers a newly-added flag-modifying
+  -- instruction too).
   | _ => simp [modifies_flags] at h
 
 /-- `written_regs` is a sound over-approximation of `Operation.interp`:
@@ -462,17 +466,11 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
         final) :
     final.1.regs.get64 r = s.regs.get64 r := by
   cases op with
-  | mov dst src =>
+  | mov dst src | movsx dst src | movzx dst src =>
       simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst s' a p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs]
-  | movsx dst src | movzx dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
+      first
+      | obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
+      | obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
       have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
         subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
       obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst s' _ p _ r hne final hfinal
