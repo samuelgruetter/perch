@@ -242,24 +242,25 @@ theorem MachineData.loadAvx_reaches {w : AvxWidth} [Labels] [AddressSize]
     | none => rw [hl] at hfinal; exact hfinal.elim
 
 /-- Reading an `AvxRegOrMem` operand hands its continuation a state whose
-`regs` is unchanged. -/
+`regs`/`status` are unchanged. -/
 theorem AvxRegOrMem.interp_reaches {w : AvxWidth} [Labels] [AddressSize]
     (o : AvxRegOrMem w) (s : MachineData) (p : Std.Rco Int64) (ret : w.type → MachineData → Effects)
     (checkAlign : Bool) (final : MachineState) (hfinal : Effects.Exists (o.interp s p ret checkAlign) final) :
-    ∃ (a : w.type) (s' : MachineData), s'.regs = s.regs ∧ Effects.Exists (ret a s') final := by
+    ∃ (a : w.type) (s' : MachineData), s'.regs = s.regs ∧ s'.status = s.status ∧
+      Effects.Exists (ret a s') final := by
   cases o with
-  | avx r => exact ⟨_, s, rfl, hfinal⟩
+  | avx r => exact ⟨_, s, rfl, rfl, hfinal⟩
   | mem a =>
       simp only [AvxRegOrMem.interp] at hfinal
       obtain ⟨v, hfinal⟩ := MachineData.loadAvx_reaches s _ ret checkAlign final hfinal
-      exact ⟨v, s, rfl, hfinal⟩
+      exact ⟨v, s, rfl, rfl, hfinal⟩
 
-/-- Storing to an AVX memory address never touches `regs` (only `dmem`
-differs, mirroring `MachineData.store_reaches`). -/
+/-- Storing to an AVX memory address never touches `regs`/`status` (only
+`dmem` differs, mirroring `MachineData.store_reaches`). -/
 theorem MachineData.storeAvx_reaches {w : AvxWidth} [Labels] [AddressSize]
     (s : MachineData) (addr : BitVec 64) (v : w.type) (ret : MachineData → Effects) (checkAlign : Bool)
     (final : MachineState) (hfinal : Effects.Exists (s.storeAvx addr v ret checkAlign) final) :
-    ∃ s', s'.regs = s.regs ∧ Effects.Exists (ret s') final := by
+    ∃ s', s'.regs = s.regs ∧ s'.status = s.status ∧ Effects.Exists (ret s') final := by
   simp only [MachineData.storeAvx] at hfinal
   split at hfinal
   · exact hfinal.elim
@@ -267,36 +268,37 @@ theorem MachineData.storeAvx_reaches {w : AvxWidth} [Labels] [AddressSize]
     cases hl : Mem.loadInt s.dmem addr w.bytes with
     | some _ =>
         rw [hl] at hfinal
-        exact ⟨{ s with dmem := Mem.storeInt s.dmem addr w.bytes v.toInt }, rfl, hfinal⟩
+        exact ⟨{ s with dmem := Mem.storeInt s.dmem addr w.bytes v.toInt }, rfl, rfl, hfinal⟩
     | none => rw [hl] at hfinal; exact hfinal.elim
 
 /-- Writing an `AvxDst` (as a "new-style" register, via `setAvx`) never
-changes `regs`, whether it lands in a `zmm` register or in memory. -/
+changes `regs`/`status`, whether it lands in a `zmm` register or in
+memory. -/
 theorem MachineData.setAvx_reaches {w : AvxWidth} [Labels] [AddressSize]
     (s : MachineData) (d : AvxDst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects)
     (checkAlign : Bool) (final : MachineState)
     (hfinal : Effects.Exists (MachineData.setAvx s d v p ret checkAlign) final) :
-    ∃ s', s'.regs = s.regs ∧ Effects.Exists (ret s') final := by
+    ∃ s', s'.regs = s.regs ∧ s'.status = s.status ∧ Effects.Exists (ret s') final := by
   cases d with
   | avx r =>
       simp only [MachineData.setAvx] at hfinal
-      exact ⟨s.setAvxReg r v, rfl, hfinal⟩
+      exact ⟨s.setAvxReg r v, rfl, rfl, hfinal⟩
   | mem a =>
       simp only [MachineData.setAvx] at hfinal
       exact MachineData.storeAvx_reaches s _ v ret checkAlign final hfinal
 
 /-- Writing an `AvxDst` (as a legacy SSE register, via `setAvxLegacy`)
-never changes `regs`, whether it lands in a `zmm` register or in
-memory. -/
+never changes `regs`/`status`, whether it lands in a `zmm` register or
+in memory. -/
 theorem MachineData.setAvxLegacy_reaches {w : AvxWidth} [Labels] [AddressSize]
     (s : MachineData) (d : AvxDst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects)
     (checkAlign : Bool) (final : MachineState)
     (hfinal : Effects.Exists (MachineData.setAvxLegacy s d v p ret checkAlign) final) :
-    ∃ s', s'.regs = s.regs ∧ Effects.Exists (ret s') final := by
+    ∃ s', s'.regs = s.regs ∧ s'.status = s.status ∧ Effects.Exists (ret s') final := by
   cases d with
   | avx r =>
       simp only [MachineData.setAvxLegacy] at hfinal
-      exact ⟨s.setAvxLegacyReg r v, rfl, hfinal⟩
+      exact ⟨s.setAvxLegacyReg r v, rfl, rfl, hfinal⟩
   | mem a =>
       simp only [MachineData.setAvxLegacy] at hfinal
       exact MachineData.storeAvx_reaches s _ v ret checkAlign final hfinal
@@ -313,36 +315,79 @@ theorem AvxOperation.regs_unchanged [Labels] [address_size : AddressSize] {w : A
   cases op with
   | movups dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
-      obtain ⟨s'', hregs', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ false final hfinal
+      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', hregs', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ false final hfinal
       rw [Effects.exists_done hfinal]
       simp [hregs', hregs]
   | vmovups dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
-      obtain ⟨s'', hregs', hfinal⟩ := MachineData.setAvx_reaches s' dst a p _ false final hfinal
+      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', hregs', _, hfinal⟩ := MachineData.setAvx_reaches s' dst a p _ false final hfinal
       rw [Effects.exists_done hfinal]
       simp [hregs', hregs]
   | movaps dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨s'', hregs', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ true final hfinal
+      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨s'', hregs', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ true final hfinal
       rw [Effects.exists_done hfinal]
       simp [hregs', hregs]
   | subps dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨b, s'', hregs', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
-      obtain ⟨s''', hregs'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
+      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨b, s'', hregs', _, hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
+      obtain ⟨s''', hregs'', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
       rw [Effects.exists_done hfinal]
       simp [hregs'', hregs', hregs]
   | addps dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨b, s'', hregs', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
-      obtain ⟨s''', hregs'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
+      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨b, s'', hregs', _, hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
+      obtain ⟨s''', hregs'', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
       rw [Effects.exists_done hfinal]
       simp [hregs'', hregs', hregs]
+
+/-- No `AvxOperation` ever touches `status`: each of the five AVX
+instructions only reads/writes `zmm` registers or `dmem`. Used to prove
+`modifies_flags_sound`'s `.avx` case, where `modifies_flags`
+unconditionally reports `false`. -/
+theorem AvxOperation.status_unchanged [Labels] [address_size : AddressSize] {w : AvxWidth}
+    (op : AvxOperation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
+    (final : MachineState)
+    (hfinal : Effects.Exists (AvxOperation.interp op p s (fun s' => .done (s', arbitrary_pc))) final) :
+    final.1.status = s.status := by
+  cases op with
+  | movups dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', _, hstatus', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hstatus', hstatus]
+  | vmovups dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', _, hstatus', hfinal⟩ := MachineData.setAvx_reaches s' dst a p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hstatus', hstatus]
+  | movaps dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨s'', _, hstatus', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ true final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hstatus', hstatus]
+  | subps dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨b, s'', _, hstatus', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
+      obtain ⟨s''', _, hstatus'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hstatus'', hstatus', hstatus]
+  | addps dst src =>
+      simp only [AvxOperation.interp] at hfinal
+      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨b, s'', _, hstatus', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
+      obtain ⟨s''', _, hstatus'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
+      rw [Effects.exists_done hfinal]
+      simp [hstatus'', hstatus', hstatus]
 
 /-- `modifies_flags` is a sound over-approximation of `Operation.interp`:
 running an operation it reports as not modifying the flags really does
@@ -886,7 +931,15 @@ theorem modifies_flags_sound [Labels] (i : Instr) (p : Std.Rco Int64)
                    (fun s' => .done (s', arbitrary_pc))
                    (fun pc s' => .done (s', pc))).Exists (final, final_pc)) :
     final.status = initial.status := by
-  sorry
+  cases i with
+  | regular addr_sz op_sz op =>
+      simp only [Instr.interp, Effects.Exists] at hfinal
+      exact Operation.modifies_flags_sound (address_size := .mk addr_sz) op p initial arbitrary_pc hr
+        (final, final_pc) hfinal
+  | avx addr_sz op_sz op =>
+      simp only [Instr.interp, Effects.Exists] at hfinal
+      exact AvxOperation.status_unchanged (address_size := .mk addr_sz) op p initial arbitrary_pc
+        (final, final_pc) hfinal
 
 /-- `written_regs` is sound for every `Instr`: `.regular` instructions are
 covered by `Operation.written_regs_sound`, and `.avx` instructions never
