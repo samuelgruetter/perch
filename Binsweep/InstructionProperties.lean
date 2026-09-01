@@ -303,97 +303,59 @@ theorem MachineData.setAvxLegacy_reaches {w : AvxWidth} [Labels] [AddressSize]
       simp only [MachineData.setAvxLegacy] at hfinal
       exact MachineData.storeAvx_reaches s _ v ret checkAlign final hfinal
 
-/-- No `AvxOperation` ever touches `regs`: each of the five AVX
-instructions only reads/writes `zmm` registers or `dmem`. Used to prove
-`written_regs_sound`'s `.avx` case, where `written_regs` unconditionally
-reports `[]`. -/
-theorem AvxOperation.regs_unchanged [Labels] [address_size : AddressSize] {w : AvxWidth}
+/-- No `AvxOperation` ever touches `regs`/`status`: each of the five AVX
+instructions only reads/writes `zmm` registers or `dmem`. Constructors
+with the same read/write shape (`subps`/`addps`, both a `checkAlign`d
+read of `src`, a plain read of `dst`, then a `setAvxLegacy` on `dst`)
+share one case, so a new AVX instruction only needs its own case here
+if its shape doesn't already match one. Used to prove
+`written_regs_sound`/`modifies_flags_sound`'s `.avx` cases, where
+`written_regs`/`modifies_flags` unconditionally report `[]`/`false`. -/
+theorem AvxOperation.interp_reaches [Labels] [address_size : AddressSize] {w : AvxWidth}
     (op : AvxOperation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
     (final : MachineState)
     (hfinal : Effects.Exists (AvxOperation.interp op p s (fun s' => .done (s', arbitrary_pc))) final) :
-    final.1.regs = s.regs := by
+    final.1.regs = s.regs ∧ final.1.status = s.status := by
   cases op with
   | movups dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
-      obtain ⟨s'', hregs', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ false final hfinal
+      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', hregs', hstatus', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ false final hfinal
       rw [Effects.exists_done hfinal]
-      simp [hregs', hregs]
+      exact ⟨hregs'.trans hregs, hstatus'.trans hstatus⟩
   | vmovups dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
-      obtain ⟨s'', hregs', _, hfinal⟩ := MachineData.setAvx_reaches s' dst a p _ false final hfinal
+      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
+      obtain ⟨s'', hregs', hstatus', hfinal⟩ := MachineData.setAvx_reaches s' dst a p _ false final hfinal
       rw [Effects.exists_done hfinal]
-      simp [hregs', hregs]
+      exact ⟨hregs'.trans hregs, hstatus'.trans hstatus⟩
   | movaps dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨s'', hregs', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ true final hfinal
+      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨s'', hregs', hstatus', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ true final hfinal
       rw [Effects.exists_done hfinal]
-      simp [hregs', hregs]
-  | subps dst src =>
+      exact ⟨hregs'.trans hregs, hstatus'.trans hstatus⟩
+  | subps dst src | addps dst src =>
       simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨b, s'', hregs', _, hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
-      obtain ⟨s''', hregs'', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
+      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
+      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
+      obtain ⟨s''', hregs'', hstatus'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
       rw [Effects.exists_done hfinal]
-      simp [hregs'', hregs', hregs]
-  | addps dst src =>
-      simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', hregs, _, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨b, s'', hregs', _, hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
-      obtain ⟨s''', hregs'', _, hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hregs'', hregs', hregs]
-
-/-- No `AvxOperation` ever touches `status`: each of the five AVX
-instructions only reads/writes `zmm` registers or `dmem`. Used to prove
-`modifies_flags_sound`'s `.avx` case, where `modifies_flags`
-unconditionally reports `false`. -/
-theorem AvxOperation.status_unchanged [Labels] [address_size : AddressSize] {w : AvxWidth}
-    (op : AvxOperation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
-    (final : MachineState)
-    (hfinal : Effects.Exists (AvxOperation.interp op p s (fun s' => .done (s', arbitrary_pc))) final) :
-    final.1.status = s.status := by
-  cases op with
-  | movups dst src =>
-      simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
-      obtain ⟨s'', _, hstatus', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ false final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hstatus', hstatus]
-  | vmovups dst src =>
-      simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ false final hfinal
-      obtain ⟨s'', _, hstatus', hfinal⟩ := MachineData.setAvx_reaches s' dst a p _ false final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hstatus', hstatus]
-  | movaps dst src =>
-      simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨s'', _, hstatus', hfinal⟩ := MachineData.setAvxLegacy_reaches s' dst a p _ true final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hstatus', hstatus]
-  | subps dst src =>
-      simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨b, s'', _, hstatus', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
-      obtain ⟨s''', _, hstatus'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hstatus'', hstatus', hstatus]
-  | addps dst src =>
-      simp only [AvxOperation.interp] at hfinal
-      obtain ⟨a, s', _, hstatus, hfinal⟩ := AvxRegOrMem.interp_reaches src s p _ true final hfinal
-      obtain ⟨b, s'', _, hstatus', hfinal⟩ := AvxRegOrMem.interp_reaches dst s' p _ false final hfinal
-      obtain ⟨s''', _, hstatus'', hfinal⟩ := MachineData.setAvxLegacy_reaches s'' dst _ p _ false final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hstatus'', hstatus', hstatus]
+      exact ⟨hregs''.trans (hregs'.trans hregs), hstatus''.trans (hstatus'.trans hstatus)⟩
 
 /-- `modifies_flags` is a sound over-approximation of `Operation.interp`:
 running an operation it reports as not modifying the flags really does
 leave `status` unchanged, for every state its execution can reach.
 `next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
-how Kraken's own `step1` observes a single instruction's effect. -/
+how Kraken's own `step1` observes a single instruction's effect.
+
+Only the constructors `modifies_flags` reports `false` for get their
+own case; every other constructor -- i.e. every one `modifies_flags`
+reports `true` for -- falls through to the final wildcard case, which
+derives a contradiction from `h` without needing to know which
+constructor `op` actually is. This means a newly-added constructor
+that modifies the flags needs no change here at all; only one that
+*doesn't* would need a new named case above the wildcard. -/
 theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
     (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
     (h : modifies_flags (.regular address_size.address_size w op) = false)
@@ -409,13 +371,7 @@ theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w 
       obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' a p _ final hfinal
       rw [Effects.exists_done hfinal]
       exact hstatus'.trans hstatus
-  | movsx dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
-      obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'.trans hstatus
-  | movzx dst src =>
+  | movsx dst src | movzx dst src =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
       obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
@@ -447,39 +403,12 @@ theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w 
       simp only [Operation.interp] at hfinal
       rw [Effects.exists_done hfinal]
       exact MachineData.setReg_status s dst _
-  | add dst src => simp [modifies_flags] at h
-  | adc dst src => simp [modifies_flags] at h
-  | adcx dst src => simp [modifies_flags] at h
-  | adox dst src => simp [modifies_flags] at h
-  | inc dst => simp [modifies_flags] at h
-  | dec dst => simp [modifies_flags] at h
-  | neg dst => simp [modifies_flags] at h
-  | sub dst src => simp [modifies_flags] at h
-  | sbb dst src => simp [modifies_flags] at h
-  | cmp a b => simp [modifies_flags] at h
-  | mul src => simp [modifies_flags] at h
-  | mulx hi lo src => simp [modifies_flags] at h
-  | imul1 src => simp [modifies_flags] at h
-  | imul dst src1 src2 => simp [modifies_flags] at h
-  | test a b => simp [modifies_flags] at h
-  | and dst src => simp [modifies_flags] at h
-  | or dst src => simp [modifies_flags] at h
-  | xor dst src => simp [modifies_flags] at h
   | not dst =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
       obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
       rw [Effects.exists_done hfinal]
       exact hstatus'.trans hstatus
-  | shl dst c => simp [modifies_flags] at h
-  | shr dst c => simp [modifies_flags] at h
-  | sar dst c => simp [modifies_flags] at h
-  | shld dst src c => simp [modifies_flags] at h
-  | shrd dst src c => simp [modifies_flags] at h
-  | rol dst c => simp [modifies_flags] at h
-  | ror dst c => simp [modifies_flags] at h
-  | rcl dst c => simp [modifies_flags] at h
-  | rcr dst c => simp [modifies_flags] at h
   | bswap dst =>
       simp only [Operation.interp] at hfinal
       cases w with
@@ -505,13 +434,25 @@ theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w 
       simp only [Operation.interp] at hfinal
       obtain ⟨a, hfinal⟩ := MachineData.load_reaches s _ _ final hfinal
       rw [Effects.exists_done hfinal]
-  | nop n => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
-  | nopalign a b => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
+  | nop n | nopalign n _ =>
+      simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
+  -- Every other constructor is one `modifies_flags` already reports `true`
+  -- for, contradicting `h`; this covers them without listing them (and
+  -- automatically covers a newly-added flag-modifying instruction too).
+  | _ => simp [modifies_flags] at h
 
 /-- `written_regs` is a sound over-approximation of `Operation.interp`:
 running an operation can only change `regs.get64 r` for a register `r`
 it reports as written. Same setup as `modifies_flags_sound` (`next`/`jmp`
-fixed to `Effects.done`). -/
+fixed to `Effects.done`).
+
+Unlike `modifies_flags_sound`, there's no single fallback tactic that
+covers every constructor `written_regs` doesn't single out, since each
+one's proof depends on which registers/operands it actually reads and
+writes. Constructors that read/write the same shape of operands (e.g.
+`add`/`adc`/`sub`/`sbb`, or the shift family) share one case instead,
+so a newly-added constructor with a shape already covered just joins
+that case's pattern; only a genuinely new shape needs a new case. -/
 theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : Width}
     (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64) (r : Reg64)
     (hr : (written_regs (.regular address_size.address_size w op)).contains r = false)
@@ -529,15 +470,7 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst s' a p _ r hne final hfinal
       rw [Effects.exists_done hfinal]
       simp [hget, hregs]
-  | movsx dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst s' _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs]
-  | movzx dst src =>
+  | movsx dst src | movzx dst src =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
       have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
@@ -562,34 +495,7 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       have hne : r ≠ dst.base := Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
       split at hfinal <;> rw [Effects.exists_done hfinal] <;>
         simp [MachineData.setReg_get64_of_ne s' dst _ hne, hregs]
-  | add dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
-      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := RegOrMem.interp_reaches dst s' p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s''', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs', hregs]
-  | adc dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
-      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := RegOrMem.interp_reaches dst s' p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s''', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs', hregs]
-  | sub dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
-      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := RegOrMem.interp_reaches dst s' p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s''', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs', hregs]
-  | sbb dst src =>
+  | add dst src | adc dst src | sub dst src | sbb dst src =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
       obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := RegOrMem.interp_reaches dst s' p _ final hfinal
@@ -604,23 +510,7 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       obtain ⟨vb, s'', hregs', hstatus', hfinal⟩ := Operand.interp_reaches b s' p _ final hfinal
       rw [Effects.exists_done hfinal]
       simp [hregs', hregs]
-  | mul src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨b, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
-      have hr' : (r == Reg64.rax) = false ∧ (r == Reg64.rdx) = false := by simpa [written_regs] using hr
-      have hrax : r ≠ Reg64.rax := Reg64.ne_of_beq_eq_false hr'.1
-      have hrdx : r ≠ Reg64.rdx := Reg64.ne_of_beq_eq_false hr'.2
-      obtain ⟨_, hfinal⟩ := hfinal
-      obtain ⟨_, hfinal⟩ := hfinal
-      obtain ⟨_, hfinal⟩ := hfinal
-      obtain ⟨_, hfinal⟩ := hfinal
-      split at hfinal
-      · rw [Effects.exists_done hfinal]
-        simp [MachineData.setReg_get64_of_ne s' (.low .rax .W16) _ hrax, hregs]
-      · rw [Effects.exists_done hfinal]
-        simp [MachineData.setReg_get64_of_ne _ (.low .rdx w) _ hrdx,
-          MachineData.setReg_get64_of_ne s' (.low .rax w) _ hrax, hregs]
-  | imul1 src =>
+  | mul src | imul1 src =>
       simp only [Operation.interp] at hfinal
       obtain ⟨b, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
       have hr' : (r == Reg64.rax) = false ∧ (r == Reg64.rdx) = false := by simpa [written_regs] using hr
@@ -667,7 +557,7 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       obtain ⟨_, hfinal⟩ := hfinal
       rw [Effects.exists_done hfinal]
       simp [hregs', hregs]
-  | and dst src =>
+  | and dst src | or dst src | xor dst src =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
       obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := Operand.interp_reaches src s' p _ final hfinal
@@ -677,35 +567,7 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       obtain ⟨s''', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
       rw [Effects.exists_done hfinal]
       simp [hget, hregs', hregs]
-  | or dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := Operand.interp_reaches src s' p _ final hfinal
-      obtain ⟨_, hfinal⟩ := hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s''', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs', hregs]
-  | xor dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := Operand.interp_reaches src s' p _ final hfinal
-      obtain ⟨_, hfinal⟩ := hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s''', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs', hregs]
-  | not dst =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst s' _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs]
-  | inc dst =>
+  | not dst | inc dst | dec dst | neg dst =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
       have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
@@ -713,37 +575,14 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
       rw [Effects.exists_done hfinal]
       simp [hget, hregs]
-  | dec dst =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs]
-  | neg dst =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-      rw [Effects.exists_done hfinal]
-      simp [hget, hregs]
-  | adcx dst src =>
+  | adcx dst src | adox dst src =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
       obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := Reg.interp_reaches dst s' p _ final hfinal
       have hne : r ≠ dst.base := Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
       rw [Effects.exists_done hfinal]
       simp [Reg64s.get64_set_of_ne dst _ hne, hregs', hregs]
-  | adox dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
-      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := Reg.interp_reaches dst s' p _ final hfinal
-      have hne : r ≠ dst.base := Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      rw [Effects.exists_done hfinal]
-      simp [Reg64s.get64_set_of_ne dst _ hne, hregs', hregs]
-  | shl dst c =>
+  | shl dst c | shr dst c | sar dst c =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
       have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
@@ -757,35 +596,7 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
         all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
         all_goals (obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal)
         all_goals (rw [Effects.exists_done hfinal]; simp [hget, hregs])
-  | shr dst c =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      split at hfinal
-      · rw [Effects.exists_done hfinal]; simp [hregs]
-      · all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (try split at hfinal)
-        all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (try split at hfinal)
-        all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal)
-        all_goals (rw [Effects.exists_done hfinal]; simp [hget, hregs])
-  | sar dst c =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      split at hfinal
-      · rw [Effects.exists_done hfinal]; simp [hregs]
-      · all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (try split at hfinal)
-        all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (try split at hfinal)
-        all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal)
-        all_goals (rw [Effects.exists_done hfinal]; simp [hget, hregs])
-  | rol dst c =>
+  | rol dst c | ror dst c | rcl dst c | rcr dst c =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
       have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
@@ -798,61 +609,7 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
         · obtain ⟨_, hfinal⟩ := hfinal
           obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
           rw [Effects.exists_done hfinal]; simp [hget, hregs]
-  | ror dst c =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      split at hfinal
-      · rw [Effects.exists_done hfinal]; simp [hregs]
-      · split at hfinal
-        · obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-          rw [Effects.exists_done hfinal]; simp [hget, hregs]
-        · obtain ⟨_, hfinal⟩ := hfinal
-          obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-          rw [Effects.exists_done hfinal]; simp [hget, hregs]
-  | rcl dst c =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      split at hfinal
-      · rw [Effects.exists_done hfinal]; simp [hregs]
-      · split at hfinal
-        · obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-          rw [Effects.exists_done hfinal]; simp [hget, hregs]
-        · obtain ⟨_, hfinal⟩ := hfinal
-          obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-          rw [Effects.exists_done hfinal]; simp [hget, hregs]
-  | rcr dst c =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      split at hfinal
-      · rw [Effects.exists_done hfinal]; simp [hregs]
-      · split at hfinal
-        · obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-          rw [Effects.exists_done hfinal]; simp [hget, hregs]
-        · obtain ⟨_, hfinal⟩ := hfinal
-          obtain ⟨s'', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal
-          rw [Effects.exists_done hfinal]; simp [hget, hregs]
-  | shld dst src c =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := Reg.interp_reaches src s' p _ final hfinal
-      have hne : ∀ rd, dst = .reg rd → r ≠ rd.base := fun rd hrd => by
-        subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
-      split at hfinal
-      · rw [Effects.exists_done hfinal]; simp [hregs', hregs]
-      · all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (try split at hfinal)
-        all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (try split at hfinal)
-        all_goals (try obtain ⟨_, hfinal⟩ := hfinal)
-        all_goals (obtain ⟨s''', hget, hfinal⟩ := MachineData.set_get64_of_ne dst _ _ p _ r hne final hfinal)
-        all_goals (rw [Effects.exists_done hfinal]; simp [hget, hregs', hregs])
-  | shrd dst src c =>
+  | shld dst src c | shrd dst src c =>
       simp only [Operation.interp] at hfinal
       obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
       obtain ⟨b, s'', hregs', hstatus', hfinal⟩ := Reg.interp_reaches src s' p _ final hfinal
@@ -915,8 +672,8 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
       have hne : r ≠ Reg64.rsp := Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr)
       rw [Effects.exists_done hfinal]
       simp [Reg64s.get64_set64_of_ne hne]
-  | nop n => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
-  | nopalign a b => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
+  | nop n | nopalign n _ =>
+      simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
 
 /-- `modifies_flags` is sound for every `Instr`:
 running an operation it reports as not modifying the flags really does
@@ -937,8 +694,8 @@ theorem modifies_flags_sound [Labels] (i : Instr) (p : Std.Rco Int64)
         (final, final_pc) hfinal
   | avx addr_sz op_sz op =>
       simp only [Instr.interp, Effects.Exists] at hfinal
-      exact AvxOperation.status_unchanged (address_size := .mk addr_sz) op p initial arbitrary_pc
-        (final, final_pc) hfinal
+      exact (AvxOperation.interp_reaches (address_size := .mk addr_sz) op p initial arbitrary_pc
+        (final, final_pc) hfinal).2
 
 /-- `written_regs` is sound for every `Instr`: `.regular` instructions are
 covered by `Operation.written_regs_sound`, and `.avx` instructions never
@@ -959,6 +716,6 @@ theorem written_regs_sound [Labels] (i : Instr) (p : Std.Rco Int64)
   | avx addr_sz op_sz op =>
       simp only [Instr.interp, Effects.Exists] at hfinal
       have hregs : final.regs = initial.regs :=
-        AvxOperation.regs_unchanged (address_size := .mk addr_sz) op p initial arbitrary_pc
-          (final, final_pc) hfinal
+        (AvxOperation.interp_reaches (address_size := .mk addr_sz) op p initial arbitrary_pc
+          (final, final_pc) hfinal).1
       rw [hregs]
