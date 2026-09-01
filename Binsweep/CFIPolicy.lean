@@ -17,9 +17,17 @@ structure InstrNode where
 
 abbrev Graph := List InstrNode
 
-def acceptable_instr (_instr : Instr) : Bool :=
+def acceptable_instr (instr : Instr) : Bool :=
   -- TODO (later) check that the instruction uses no forbidden prefix or segment override
-  true
+  -- TODO (later) explore allow-list-based as well as deny-list-based solutions
+  match instr with
+  | .regular _ _ op =>
+    match op with
+    -- The RET instruction is not allowed because it would enable return-oriented-programming
+    -- attacks. Instead, we expect that the compiler replaced all RETs by forward jumps.
+    | .ret => false
+    | _ => true
+  | .avx _ _ _ => true
 
 -- TODO (later) in general, what register widths are used/acceptable?
 
