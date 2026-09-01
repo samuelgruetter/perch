@@ -924,8 +924,7 @@ leave `status` unchanged, for every state its execution can reach.
 `next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
 how Kraken's own `step1` observes a single instruction's effect. -/
 theorem modifies_flags_sound [Labels] (i : Instr) (p : Std.Rco Int64)
-    (initial final : MachineData)
-    (r : Reg64) (hr : modifies_flags i = false)
+    (initial final : MachineData) (hr : modifies_flags i = false)
     (final_pc arbitrary_pc : Int64)
     (hfinal : (i.interp initial p
                    (fun s' => .done (s', arbitrary_pc))
