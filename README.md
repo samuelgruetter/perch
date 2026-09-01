@@ -22,6 +22,12 @@ It is recommended to browse and edit the files using VS Code. The [Lean4 extensi
 To build the project, run `lake build`.
 
 
+### License
+
+This project is dual-licensed under the [MIT License](./LICENSE-MIT) and [Apache License](./LICENSE-APACHE).
+That is, contributors must respect both licenses, and users can choose one of them.
+
+
 ### References
 
 * [1] Connor et. al, SEC'20: *PKU pitfalls: attacks on PKU-based memory isolation systems*, https://dl.acm.org/doi/10.5555/3489212.3489292
