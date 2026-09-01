@@ -349,18 +349,35 @@ leave `status` unchanged, for every state its execution can reach.
 `next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
 how Kraken's own `step1` observes a single instruction's effect.
 
-Rather than one totally separate tactic block per constructor, this
-groups constructors by *shape* under a single `cases ... with` clause
-(so field names still come from the pattern, no separate lookup step
-needed) and, within a group, uses `first` to try whichever `*_reaches`
-lemma matches the field's actual type (Rocq's `destruct op; solve
-[eauto using lemma1 | eauto using lemma2 | ...]`). Every
-flag-modifying constructor (`add`, `shl`, `mul`, ...) falls through to
-the trailing wildcard, which derives a contradiction from `h` without
-even knowing which constructor `op` is; this means a newly-added
-flag-modifying constructor needs no change here at all, and one that
-joins an existing read/write shape just joins that shape's pattern
-list instead of getting a new case. -/
+`cases op` (with no `with` clause) splits into one goal per
+constructor, none of whose fields get a name; `first` then tries each
+recipe below on every one of them, keeping whichever recipe's tactic
+sequence actually closes that goal (Rocq's `destruct op; solve [...]`).
+Each recipe passes every `*_reaches`/`set_reaches_status` argument as
+`_` *by name* (e.g. `(o := _) (ret := _)`), naming only `final`/`hfinal`
+explicitly: giving the argument list as `(name := value)` pairs instead
+of a bare positional list lets the elaborator process `hfinal`'s type
+first no matter where it sits in the signature, which is what actually
+pins every `_` down by unification -- with a plain positional call,
+Lean sometimes gives up on an early `_` before reaching `hfinal`. A
+recipe that doesn't apply to a given constructor fails outright (no
+`*_reaches` lemma matches its shape), so `first` moves on to the next
+one; this means a newly-added constructor needs no change here at all
+as long as its shape (what it reads, whether it modifies the flags)
+matches one of these recipes, and most recipes below cover several
+constructors (`movsx`/`movzx`/`not`, `pop`/`ret`, `lea`/`bswap`, ...)
+without ever naming them, simply because they happen to share a shape.
+Only a genuinely new shape needs a new recipe.
+
+(Each choice between two *different* `*_reaches` lemmas -- e.g. `mov`
+reading an `Operand` versus everything else reading a `RegOrMem` --
+has to be its own top-level recipe here, not nested as a `first` inside
+one shared recipe: nesting it tickled a reproducible elaborator quirk
+where an earlier failed alternative's leftover metavariables broke the
+named-argument trick for a later one. A `first` whose alternatives
+don't each invoke one of these lemmas by name -- e.g. bswap's "was
+there an extra `undefined` layer or not" -- doesn't have this
+problem.) -/
 theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
     (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
     (h : modifies_flags (.regular address_size.address_size w op) = false)
@@ -369,81 +386,101 @@ theorem Operation.modifies_flags_sound [Labels] [address_size : AddressSize] {w 
         (Operation.interp op p s (fun s' => .done (s', arbitrary_pc)) (fun pc s' => .done (s', pc)))
         final) :
     final.1.status = s.status := by
-  cases op with
-  -- mov (reads `src : Operand`) and movsx/movzx (read `src : RegOrMem`):
-  -- read one operand, write it (or the read's result) to `dst`.
-  | mov dst src | movsx dst src | movzx dst src =>
-      simp only [Operation.interp] at hfinal
-      first
-      | obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
-      | obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
-      obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'.trans hstatus
-  | not dst =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches dst s p _ final hfinal
-      obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s' _ p _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'.trans hstatus
-  | push src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := Operand.interp_reaches src s p _ final hfinal
-      obtain ⟨s'', hregs', hstatus', hfinal⟩ := MachineData.store_reaches _ _ a _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'.trans hstatus
-  | pop dst =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, hfinal⟩ := MachineData.load_reaches s _ _ final hfinal
-      obtain ⟨s'', hstatus', hfinal⟩ := MachineData.set_reaches_status dst _ a p _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'
-  | setcc cc dst =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨s', hstatus', hfinal⟩ := MachineData.set_reaches_status dst s _ p _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'
-  | cmovcc cc dst src =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RegOrMem.interp_reaches src s p _ final hfinal
-      split at hfinal <;> rw [Effects.exists_done hfinal] <;>
-        exact (MachineData.setReg_status s' dst _).trans hstatus
-  | lea dst src =>
-      simp only [Operation.interp] at hfinal
-      rw [Effects.exists_done hfinal]
-      exact MachineData.setReg_status s dst _
-  | bswap dst =>
-      simp only [Operation.interp] at hfinal
-      cases w with
-      | W32 | W64 => rw [Effects.exists_done hfinal]; exact MachineData.setReg_status s dst _
-      | W8 | W16 =>
-          obtain ⟨v, hfinal⟩ := hfinal
-          rw [Effects.exists_done hfinal]; exact MachineData.setReg_status s dst _
-  | jcc cc l =>
-      simp only [Operation.interp] at hfinal
-      split at hfinal <;> rw [Effects.exists_done hfinal]
-  | jmp tgt =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RelRegOrMem.interp_reaches tgt s p _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus
-  | call tgt =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, s', hregs, hstatus, hfinal⟩ := RelRegOrMem.interp_reaches tgt s p _ final hfinal
-      obtain ⟨s'', hregs', hstatus', hfinal⟩ := MachineData.store_reaches _ _ _ _ final hfinal
-      rw [Effects.exists_done hfinal]
-      exact hstatus'.trans hstatus
-  | ret =>
-      simp only [Operation.interp] at hfinal
-      obtain ⟨a, hfinal⟩ := MachineData.load_reaches s _ _ final hfinal
-      rw [Effects.exists_done hfinal]
-  | nop n | nopalign n _ =>
-      simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
-  -- Every other constructor is one `modifies_flags` already reports
-  -- `true` for, contradicting `h`; this covers them without listing
-  -- them (and automatically covers a newly-added flag-modifying
-  -- instruction too).
-  | _ => simp [modifies_flags] at h
+  cases op <;>
+    first
+    -- Every flag-modifying instruction (add, shl, mul, ...): `h` is
+    -- immediately contradictory, regardless of which one it is. `done`
+    -- makes sure we backtrack instead of stopping here when `simp`
+    -- instead simplifies `h` to `True` (i.e. `op` doesn't modify the
+    -- flags after all, so this recipe doesn't apply).
+    | (simp [modifies_flags] at h; done)
+    -- mov: read the source `Operand`, write it to the destination.
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
+         Operand.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
+       obtain ⟨s'', hstatus', hfinal⟩ :=
+         MachineData.set_reaches_status (final := final) (hfinal := hfinal) (s := s') (p := p) (d := _) (v := _)
+           (ret := _)
+       rw [Effects.exists_done hfinal]
+       exact hstatus'.trans hstatus)
+    -- movsx/movzx (read the source `RegOrMem`) and `not` (reads its own
+    -- destination as the source): read one `RegOrMem`, write it (or the
+    -- read's result) to the destination.
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
+         RegOrMem.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
+       obtain ⟨s'', hstatus', hfinal⟩ :=
+         MachineData.set_reaches_status (final := final) (hfinal := hfinal) (s := s') (p := p) (d := _) (v := _)
+           (ret := _)
+       rw [Effects.exists_done hfinal]
+       exact hstatus'.trans hstatus)
+    -- push: read the source `Operand`, store it, done.
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
+         Operand.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
+       obtain ⟨s'', hregs', hstatus', hfinal⟩ :=
+         MachineData.store_reaches (final := final) (hfinal := hfinal) (s := _) (v := a) (ret := _) (addr := _)
+       rw [Effects.exists_done hfinal]
+       exact hstatus'.trans hstatus)
+    -- pop/ret: load first, then either write the destination (pop) or
+    -- finish directly (ret).
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨a, hfinal⟩ :=
+         MachineData.load_reaches (final := final) (hfinal := hfinal) (s := s) (ret := _) (addr := _)
+       first
+       | (obtain ⟨s'', hstatus', hfinal⟩ :=
+            MachineData.set_reaches_status (final := final) (hfinal := hfinal) (s := _) (p := p) (d := _) (v := a)
+              (ret := _)
+          rw [Effects.exists_done hfinal]
+          exact hstatus')
+       | rw [Effects.exists_done hfinal])
+    -- setcc: write the destination directly, no read.
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨s', hstatus', hfinal⟩ :=
+         MachineData.set_reaches_status (final := final) (hfinal := hfinal) (s := s) (p := p) (d := _) (v := _)
+           (ret := _)
+       rw [Effects.exists_done hfinal]
+       exact hstatus')
+    -- cmovcc: read the source, branch on the condition, write the
+    -- destination either way.
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
+         RegOrMem.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
+       split at hfinal <;> rw [Effects.exists_done hfinal] <;>
+         exact (MachineData.setReg_status s' _ _).trans hstatus)
+    -- lea and bswap (w32/w64): write the destination directly, no read;
+    -- bswap for w8/w16 goes through one architecturally-undefined layer
+    -- first (the width isn't a whole number of swapped bytes). `w` is
+    -- an ambient variable here, not something `cases op` concretizes,
+    -- so bswap's own `match w with ...` needs its own `cases w` to
+    -- reduce; lea doesn't care about `w` and takes the same "direct"
+    -- branch under every width.
+    | (simp only [Operation.interp] at hfinal
+       cases w with
+       | W8 | W16 | W32 | W64 =>
+           first
+           | (rw [Effects.exists_done hfinal]; exact MachineData.setReg_status s _ _)
+           | (obtain ⟨v, hfinal⟩ := hfinal
+              rw [Effects.exists_done hfinal]; exact MachineData.setReg_status s _ _))
+    -- jcc: branches on the condition, no state change either way.
+    | (simp only [Operation.interp] at hfinal
+       split at hfinal <;> rw [Effects.exists_done hfinal])
+    -- jmp: read the (possibly memory-indirect) target, done.
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
+         RelRegOrMem.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
+       rw [Effects.exists_done hfinal]
+       exact hstatus)
+    -- call: read the target, push the return address, done.
+    | (simp only [Operation.interp] at hfinal
+       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
+         RelRegOrMem.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
+       obtain ⟨s'', hregs', hstatus', hfinal⟩ :=
+         MachineData.store_reaches (final := final) (hfinal := hfinal) (s := _) (v := _) (ret := _) (addr := _)
+       rw [Effects.exists_done hfinal]
+       exact hstatus'.trans hstatus)
+    -- nop/nopalign: immediately done, no state change.
+    | (simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal])
 
 /-- `written_regs` is a sound over-approximation of `Operation.interp`:
 running an operation can only change `regs.get64 r` for a register `r`
