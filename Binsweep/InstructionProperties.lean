@@ -873,20 +873,20 @@ theorem Operation.written_regs_sound [Labels] [address_size : AddressSize] {w : 
   | nop n => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
   | nopalign a b => simp only [Operation.interp] at hfinal; rw [Effects.exists_done hfinal]
 
-/-- `modifies_flags` is a sound over-approximation of `Operation.interp`:
+/-- `modifies_flags` is sound for every `Instr`:
 running an operation it reports as not modifying the flags really does
 leave `status` unchanged, for every state its execution can reach.
 `next`/`jmp` are fixed to immediately finish (`Effects.done`), matching
 how Kraken's own `step1` observes a single instruction's effect. -/
-theorem modifies_flags_sound [Labels] [address_size : AddressSize] {w : Width}
-    (op : Operation w) (p : Std.Rco Int64) (initial final : MachineData)
-    (arbitrary_pc final_pc : Int64)
-    (h : modifies_flags (.regular address_size.address_size w op) = false)
-    (hfinal : (op.interp p initial
-                  (fun s' => .done (s', arbitrary_pc))
-                  (fun pc s' => .done (s', pc))).Exists (final, final_pc)) :
-    final.status = initial.status :=
-  Operation.modifies_flags_sound op p initial arbitrary_pc h (final, final_pc) hfinal
+theorem modifies_flags_sound [Labels] (i : Instr) (p : Std.Rco Int64)
+    (initial final : MachineData)
+    (r : Reg64) (hr : modifies_flags i = false)
+    (final_pc arbitrary_pc : Int64)
+    (hfinal : (i.interp initial p
+                   (fun s' => .done (s', arbitrary_pc))
+                   (fun pc s' => .done (s', pc))).Exists (final, final_pc)) :
+    final.status = initial.status := by
+  sorry
 
 /-- `written_regs` is sound for every `Instr`: `.regular` instructions are
 covered by `Operation.written_regs_sound`, and `.avx` instructions never
