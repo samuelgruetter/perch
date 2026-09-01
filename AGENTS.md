@@ -1,3 +1,8 @@
+### Leave theorem statements unchanged
+
+If a theorem statement was not written by you, DO NOT change it.
+Only exception: If a theorem statement contains an obvious mistake, fix the mistake.
+
 ### Before committing
 
 After you have run `git add` with the files you want to add, read the output of `git diff --staged --stat`. For each file that has both additions and deletions (i.e. both + signs and - signs on its stat line), read the output of `git diff --staged -- path/to/the/file.ext` and decide if the diff is as minimal as it can be.
