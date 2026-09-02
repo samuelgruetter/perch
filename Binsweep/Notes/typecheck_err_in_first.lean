@@ -66,7 +66,29 @@ example (db : Database) (final : Database)
     (h : Holds (lookup .lookup db (fun db' => .done db')) final) : True := by
   first
     | (obtain ⟨a, db', hdb, h⟩ :=
-         Column.interp_reaches _ _ _ _ h
-         --                              ^^^^^^ type error
+         Column.interp_reaches _ _ _ _ h -- type error
+       sorry)
+    | dbg_trace "fell through into sorry case" <;> sorry
+
+example (db : Database) (final : Database)
+    (h : Holds (lookup .lookup db (fun db' => .done db')) final) : True := by
+  first
+    | (obtain ⟨a, db', hdb, h⟩ :=
+         Column.interp_reaches _ _ _ _ True.intro -- type error
+       sorry)
+    | dbg_trace "fell through into sorry case" <;> sorry
+
+example (db : Database) (final : Database)
+    (h : Holds (.done db) final) : True := by
+  first
+    | (obtain ⟨a, db', hdb, h⟩ :=
+         Column.interp_reaches _ _ _ _ True.intro -- type error
+       sorry)
+    | dbg_trace "fell through into sorry case" <;> sorry
+
+example (db : Database) (final : Database) : True := by
+  first
+    | (obtain ⟨a, db', hdb, h⟩ :=
+         Column.interp_reaches _ _ _ _ True.intro -- type error
        sorry)
     | dbg_trace "fell through into sorry case" <;> sorry
