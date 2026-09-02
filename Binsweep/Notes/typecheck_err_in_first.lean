@@ -3,42 +3,12 @@
 -- reproduce the "undiscarded typecheck error in `first`" phenomenon from
 -- Example 2 below. No imports needed.
 
-inductive Width | W8 | W16 | W32 | W64 deriving BEq, DecidableEq
-
-namespace Width
-@[reducible] def bits : Width → Nat | W8 => 8 | W16 => 16 | W32 => 32 | W64 => 64
-abbrev type (w : Width) : Type := BitVec w.bits
-end Width
-
 inductive Reg64 | rax deriving BEq, DecidableEq
-
-inductive Reg : Width → Type
-  | low (_ : Reg64) (w : Width) : Reg w
-
-namespace Reg
-def base {w} (r : Reg w) : Reg64 := match r with | .low r _ => r
-end Reg
-
-inductive RegOrMem (w : Width) | reg (r : Reg w)
-abbrev Dst := RegOrMem
-
-inductive Operation (w : Width)
-  | not (_ : Dst w)
-
-instance : Coe UInt64 (BitVec 64) := ⟨UInt64.toBitVec⟩
-
-namespace BitVec
-def take {w} (x : BitVec w) (n : Nat) : BitVec n := x.extractLsb' 0 n
-end BitVec
 
 structure Reg64s where
   rax : UInt64 := 0
 
-def Reg64s.get64 (s : Reg64s) (r : Reg64) : Width.W64.type := UInt64.toBitVec (match r with
-  | .rax => s.rax)
-
-def Reg64s.get (s : Reg64s) {w} (r : Reg w) : w.type :=
-  (s.get64 r.base).take w.bits
+def Reg64s.get (s : Reg64s) (r : Reg64) : UInt64 := match r with | .rax => s.rax
 
 structure MachineData where
   regs : Reg64s := {}
@@ -50,21 +20,25 @@ def Effects.Exists (es : Effects) (final : MachineData) : Prop :=
   match es with
   | .done result => result = final
 
-def RegOrMem.interp {w}
-  (o : RegOrMem w) (s : MachineData)
-  (ret : w.type → MachineData → Effects) :=
+inductive RegOrMem | reg (r : Reg64)
+
+inductive Operation | not (_ : RegOrMem)
+
+def RegOrMem.interp
+  (o : RegOrMem) (s : MachineData)
+  (ret : UInt64 → MachineData → Effects) :=
   match o with
   | .reg r => ret (s.regs.get r) s
 
 def Operation.interp
-  {w} (i : Operation w) (s : MachineData) (next : MachineData → Effects) : Effects :=
+  (i : Operation) (s : MachineData) (next : MachineData → Effects) : Effects :=
   match i with
   | .not dst => dst.interp s (fun _ s => next s)
 
-theorem RegOrMem.interp_reaches {w : Width}
-    (o : RegOrMem w) (s : MachineData) (ret : w.type → MachineData → Effects)
+theorem RegOrMem.interp_reaches
+    (o : RegOrMem) (s : MachineData) (ret : UInt64 → MachineData → Effects)
     (final : MachineData) (hfinal : Effects.Exists (o.interp s ret) final) :
-    ∃ (a : w.type) (s' : MachineData), s'.regs = s.regs ∧
+    ∃ (a : UInt64) (s' : MachineData), s'.regs = s.regs ∧
       Effects.Exists (ret a s') final := by
   cases o with
   | reg r => exact ⟨_, s, rfl, hfinal⟩
@@ -105,8 +79,7 @@ example (sh : Shape) (w : sh.thing) (hn : w = foo w) : ∃ y : sh.thing, y = w :
 -- Example 2: seems to be "the same" setup, but typecheck error inside branch of `first`
 -- fails the whole `first`. Unexpected!
 
-example {w : Width}
-    (op : Operation w) (s : MachineData)
+example (op : Operation) (s : MachineData)
     (final : MachineData)
     (hfinal : Effects.Exists (Operation.interp op s (fun s' => .done s')) final) :
     True := by
