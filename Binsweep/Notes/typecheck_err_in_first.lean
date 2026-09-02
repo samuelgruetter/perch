@@ -3,15 +3,8 @@
 -- reproduce the "undiscarded typecheck error in `first`" phenomenon from
 -- Example 2 below. No imports needed.
 
-inductive Reg64 | rax deriving BEq, DecidableEq
-
-structure Reg64s where
-  rax : UInt64 := 0
-
-def Reg64s.get (s : Reg64s) (r : Reg64) : UInt64 := match r with | .rax => s.rax
-
 structure MachineData where
-  regs : Reg64s := {}
+  reg : UInt64 := 0
 
 inductive Effects
   | done (a : MachineData)
@@ -20,7 +13,7 @@ def Effects.Exists (es : Effects) (final : MachineData) : Prop :=
   match es with
   | .done result => result = final
 
-inductive RegOrMem | reg (r : Reg64)
+inductive RegOrMem | reg
 
 inductive Operation | not (_ : RegOrMem)
 
@@ -28,7 +21,7 @@ def RegOrMem.interp
   (o : RegOrMem) (s : MachineData)
   (ret : UInt64 → MachineData → Effects) :=
   match o with
-  | .reg r => ret (s.regs.get r) s
+  | .reg => ret s.reg s
 
 def Operation.interp
   (i : Operation) (s : MachineData) (next : MachineData → Effects) : Effects :=
@@ -38,10 +31,10 @@ def Operation.interp
 theorem RegOrMem.interp_reaches
     (o : RegOrMem) (s : MachineData) (ret : UInt64 → MachineData → Effects)
     (final : MachineData) (hfinal : Effects.Exists (o.interp s ret) final) :
-    ∃ (a : UInt64) (s' : MachineData), s'.regs = s.regs ∧
+    ∃ (a : UInt64) (s' : MachineData), s' = s ∧
       Effects.Exists (ret a s') final := by
   cases o with
-  | reg r => exact ⟨_, s, rfl, hfinal⟩
+  | reg => exact ⟨_, s, rfl, hfinal⟩
 
 
 -- Example 1: typecheck error inside branch of `first` gets discarded, as expected
