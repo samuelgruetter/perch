@@ -1,80 +1,72 @@
--- Common definitions shared by Example 1 and Example 2 below.
-
-structure MachineData where
-  reg : UInt64 := 0
-
-inductive Effects
-  | done (a : MachineData)
-
-def Effects.Exists (es : Effects) (final : MachineData) : Prop :=
-  match es with
-  | .done result => result = final
-
-inductive RegOrMem | reg
-
-def RegOrMem.interp
-  (o : RegOrMem) (s : MachineData)
-  (ret : UInt64 → MachineData → Effects) :=
-  match o with
-  | .reg => ret s.reg s
-
-theorem RegOrMem.interp_reaches
-    (o : RegOrMem) (s : MachineData) (ret : UInt64 → MachineData → Effects)
-    (final : MachineData) (hfinal : Effects.Exists (o.interp s ret) final) :
-    ∃ (a : UInt64) (s' : MachineData), s' = s ∧
-      Effects.Exists (ret a s') final := by
-  cases o with
-  | reg => exact ⟨_, s, rfl, hfinal⟩
-
--- The one thing that differs between Example 1 and Example 2 below: whether
--- the body of the function producing `hfinal`'s type contains a `match`.
--- Both compute the exact same `Effects` value
--- (`RegOrMem.reg.interp s (fun _ s => next s)`) -- `interp_with_match` just
--- reaches it through a single-armed, otherwise-trivial `match`.
-
-def interp_no_match (s : MachineData) (next : MachineData → Effects) : Effects :=
-  RegOrMem.reg.interp s (fun _ s => next s)
-
-inductive Trivial | mk
-
-def interp_with_match (i : Trivial) (s : MachineData) (next : MachineData → Effects) : Effects :=
-  match i with
-  | .mk => RegOrMem.reg.interp s (fun _ s => next s)
-
+-- A tiny "database of persons" domain, used to illustrate an elaboration
+-- quirk: a typecheck error inside one branch of `first` sometimes gets
+-- discarded, as expected (Example 1), but an error produced the exact
+-- same way -- applying a lemma to a hypothesis via `_` placeholders --
+-- sometimes escapes `first` entirely instead (Example 2). Unexpected!
 
 -- Example 1: typecheck error inside branch of `first` gets discarded, as expected
---
--- `hfinal`'s type is headed by `interp_no_match`, whose body has no `match`.
--- Applying `RegOrMem.interp_reaches` with `_` placeholders for its first
--- four arguments now unifies immediately against `hfinal`'s type -- the
--- first `first` alternative succeeds outright, so, unlike Example 2 below,
--- there's no error here for `first` to discard in the first place.
 
-example (s : MachineData) (final : MachineData)
-    (hfinal : Effects.Exists (interp_no_match s (fun s' => .done s')) final) :
-    True := by
-  first
-    | (dbg_trace "no match: unifies immediately, nothing to discard"
-       obtain ⟨a, s', hregs, hfinal⟩ := RegOrMem.interp_reaches _ _ _ _ hfinal
-       sorry)
+inductive Field | age | name
+
+def Field.type : Field → Type
+  | .age => Nat
+  | .name => String
+
+theorem reads_age (n : Nat) (h : n = n) : ∃ m, m = n := ⟨n, h⟩
+
+example (f : Field) (v : f.type) (hv : v = v) : ∃ y : f.type, y = v := by
+  cases f <;>
+    first
+    | (obtain ⟨m, hm⟩ := reads_age (h := hv)
+       exact ⟨m, hm⟩)
+    -- .name case: `hv : v = v` for `v : String`, but `reads_age` only
+    -- accepts `n = n` for `n : Nat` -- a typecheck error, but one `first`
+    -- discards cleanly, falling through to the line below.
     | dbg_trace "fell through into sorry case" <;> sorry
 
 
--- Example 2: seems to be "the same" setup, but typecheck error inside branch of `first`
--- fails the whole `first`. Unexpected!
---
--- `hfinal`'s type is headed by `interp_with_match` instead -- computing the
--- exact same `Effects` value as Example 1's `interp_no_match`, just behind
--- one extra (single-armed) `match`. That's enough to make the very same
--- `RegOrMem.interp_reaches` application fail to unify, and, unlike an
--- ordinary typecheck error, that failure isn't discarded by `first`.
+-- Example 2: seems to be "the same" setup, but typecheck error inside branch
+-- of `first` fails the whole `first`. Unexpected!
 
-example (s : MachineData) (final : MachineData)
-    (hfinal : Effects.Exists (interp_with_match .mk s (fun s' => .done s')) final) :
-    True := by
+structure Database where
+  age : Nat := 0
+
+inductive Outcome
+  | done (db : Database)
+
+def Holds (o : Outcome) (final : Database) : Prop :=
+  match o with
+  | .done result => result = final
+
+inductive Column | age
+
+def Column.interp
+    (c : Column) (db : Database) (ret : Nat → Database → Outcome) : Outcome :=
+  match c with
+  | .age => ret db.age db
+
+theorem Column.interp_reaches
+    (c : Column) (db : Database) (ret : Nat → Database → Outcome)
+    (final : Database) (h : Holds (c.interp db ret) final) :
+    ∃ (a : Nat) (db' : Database), db' = db ∧
+      Holds (ret a db') final := by
+  cases c with
+  | age => exact ⟨_, db, rfl, h⟩
+
+-- The one supported "command": look up the age column. Applying
+-- `Column.interp_reaches` to `h` below requires unifying against
+-- `lookup.interp db ret`, which only reduces through this `match`.
+inductive Command | lookup
+
+def lookup (c : Command) (db : Database) (next : Database → Outcome) : Outcome :=
+  match c with
+  | .lookup => Column.age.interp db (fun _ db => next db)
+
+example (db : Database) (final : Database)
+    (h : Holds (lookup .lookup db (fun db' => .done db')) final) : True := by
   first
-    | (obtain ⟨a, s', hregs, hfinal⟩ :=
-         RegOrMem.interp_reaches _ _ _ _ hfinal
-         --                                   ^^^^^^ type error
+    | (obtain ⟨a, db', hdb, h⟩ :=
+         Column.interp_reaches _ _ _ _ h
+         --                              ^^^^^^ type error
        sorry)
     | dbg_trace "fell through into sorry case" <;> sorry
