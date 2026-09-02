@@ -57,16 +57,14 @@ structure MachineData where
   regs : Reg64s := {}
 
 inductive Effects
-  | done (a : MachineData × Int64)
+  | done (a : MachineData)
 
-def Effects.Exists (es : Effects) (final : MachineData × Int64) : Prop :=
+def Effects.Exists (es : Effects) (final : MachineData) : Prop :=
   match es with
   | .done result => result = final
 
-abbrev MachineState := MachineData × Int64
-
 def RegOrMem.interp {w}
-  (o : RegOrMem w) (s : MachineData) (p : Std.Rco Int64)
+  (o : RegOrMem w) (s : MachineData)
   (ret : w.type → MachineData → Effects) :=
   match o with
   | .reg r => ret (s.regs.get r) s
@@ -74,19 +72,18 @@ def RegOrMem.interp {w}
 def MachineData.setReg (s : MachineData) {w} (r : Reg w) (v : w.type) : MachineData :=
   { s with regs := s.regs.set r v }
 
-def MachineData.set {w} (s : MachineData) (d : Dst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects) : Effects :=
+def MachineData.set {w} (s : MachineData) (d : Dst w) (v : w.type) (ret : MachineData → Effects) : Effects :=
   match d with
   | .reg r => ret (s.setReg r v)
 
 def Operation.interp
-  {w} (i : Operation w) (p : Std.Rco Int64) (s : MachineData)
-  (next : MachineData → Effects) (jmp : Int64 → MachineData → Effects) : Effects :=
+  {w} (i : Operation w) (s : MachineData) (next : MachineData → Effects) : Effects :=
   match i with
-  | .not dst => dst.interp s p (fun a s => let v := ~~~a; s.set dst v p next)
+  | .not dst => dst.interp s (fun a s => let v := ~~~a; s.set dst v next)
 
 theorem RegOrMem.interp_reaches {w : Width}
-    (o : RegOrMem w) (s : MachineData) (p : Std.Rco Int64) (ret : w.type → MachineData → Effects)
-    (final : MachineState) (hfinal : Effects.Exists (o.interp s p ret) final) :
+    (o : RegOrMem w) (s : MachineData) (ret : w.type → MachineData → Effects)
+    (final : MachineData) (hfinal : Effects.Exists (o.interp s ret) final) :
     ∃ (a : w.type) (s' : MachineData), s'.regs = s.regs ∧
       Effects.Exists (ret a s') final := by
   cases o with
@@ -129,16 +126,14 @@ example (sh : Shape) (w : sh.thing) (hn : w = foo w) : ∃ y : sh.thing, y = w :
 -- fails the whole `first`. Unexpected!
 
 example {w : Width}
-    (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
-    (final : MachineState)
-    (hfinal : Effects.Exists
-        (Operation.interp op p s (fun s' => .done (s', arbitrary_pc)) (fun pc s' => .done (s', pc)))
-        final) :
+    (op : Operation w) (s : MachineData)
+    (final : MachineData)
+    (hfinal : Effects.Exists (Operation.interp op s (fun s' => .done s')) final) :
     True := by
   cases op <;>
     first
     | (obtain ⟨a, s', hregs, hfinal⟩ :=
-         RegOrMem.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
+         RegOrMem.interp_reaches (final := final) (hfinal := hfinal) (s := s) (o := _) (ret := _)
          --                                                  ^^^^^^ type error
        sorry)
     | sorry
