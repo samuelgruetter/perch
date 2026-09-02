@@ -29,10 +29,7 @@ instance : Coe UInt64 (BitVec 64) := ⟨UInt64.toBitVec⟩
 
 namespace BitVec
 def take {w} (x : BitVec w) (n : Nat) : BitVec n := x.extractLsb' 0 n
-def drop {w} (x : BitVec w) (n : Nat) : BitVec (w - n) := x.extractLsb' n (w-n)
 end BitVec
-def BitVec.replaceLow {w n} (old : BitVec w) (new : BitVec n) : BitVec w :=
-  (BitVec.append (old.drop n) new).setWidth _
 
 structure Reg64s where
   rax : UInt64 := 0
@@ -40,18 +37,8 @@ structure Reg64s where
 def Reg64s.get64 (s : Reg64s) (r : Reg64) : Width.W64.type := UInt64.toBitVec (match r with
   | .rax => s.rax)
 
-def Reg64s.set64 (regs : Reg64s) (r : Reg64) (v : Width.W64.type) : Reg64s :=
-  let v := UInt64.ofBitVec v
-  match r with
-  | .rax => { regs with rax := v }
-
 def Reg64s.get (s : Reg64s) {w} (r : Reg w) : w.type :=
   (s.get64 r.base).take w.bits
-
-def Reg64s.set (s : Reg64s) {w} (r : Reg w) (v : w.type) : Reg64s := match r with
-  | .low r .W64 => s.set64 r v
-  | .low r .W32 => s.set64 r (v.zeroExtend _)
-  | .low r w => s.set64 r ((s.get64 r).replaceLow v)
 
 structure MachineData where
   regs : Reg64s := {}
@@ -69,17 +56,10 @@ def RegOrMem.interp {w}
   match o with
   | .reg r => ret (s.regs.get r) s
 
-def MachineData.setReg (s : MachineData) {w} (r : Reg w) (v : w.type) : MachineData :=
-  { s with regs := s.regs.set r v }
-
-def MachineData.set {w} (s : MachineData) (d : Dst w) (v : w.type) (ret : MachineData → Effects) : Effects :=
-  match d with
-  | .reg r => ret (s.setReg r v)
-
 def Operation.interp
   {w} (i : Operation w) (s : MachineData) (next : MachineData → Effects) : Effects :=
   match i with
-  | .not dst => dst.interp s (fun a s => let v := ~~~a; s.set dst v next)
+  | .not dst => dst.interp s (fun _ s => next s)
 
 theorem RegOrMem.interp_reaches {w : Width}
     (o : RegOrMem w) (s : MachineData) (ret : w.type → MachineData → Effects)
