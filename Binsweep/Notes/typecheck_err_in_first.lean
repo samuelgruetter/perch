@@ -15,7 +15,7 @@ def Effects.Exists (es : Effects) (final : MachineData) : Prop :=
 
 inductive RegOrMem | reg
 
-inductive Operation | not (_ : RegOrMem)
+inductive Operation | not
 
 def RegOrMem.interp
   (o : RegOrMem) (s : MachineData)
@@ -26,7 +26,7 @@ def RegOrMem.interp
 def Operation.interp
   (i : Operation) (s : MachineData) (next : MachineData → Effects) : Effects :=
   match i with
-  | .not dst => dst.interp s (fun _ s => next s)
+  | .not => RegOrMem.reg.interp s (fun _ s => next s)
 
 theorem RegOrMem.interp_reaches
     (o : RegOrMem) (s : MachineData) (ret : UInt64 → MachineData → Effects)
