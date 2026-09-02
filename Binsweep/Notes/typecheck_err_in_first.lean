@@ -1,94 +1,42 @@
--- A tiny "database of persons" domain, used to illustrate an elaboration
--- quirk: a typecheck error inside one branch of `first` sometimes gets
--- discarded, as expected (Example 1), but an error produced the exact
--- same way -- applying a lemma to a hypothesis via `_` placeholders --
--- sometimes escapes `first` entirely instead (Example 2). Unexpected!
+-- Both examples below run the very same ill-typed term, `(True.intro : Nat)`,
+-- inside the first alternative of the very same `first`. They differ in
+-- exactly one token: the tactic used to bind it, `have` vs `obtain`.
+--
+-- `have` throws the typechecking error, so `first` catches it and moves on to
+-- the next alternative, as expected (Example 1).
+--
+-- `obtain` instead *logs* the error and reports success, so `first` commits to
+-- the alternative that just failed. The next alternative is never tried, yet
+-- the logged error still fails the build (Example 2). Unexpected!
+--
+-- No definitions of our own are needed to trigger this; the ill-typed term can
+-- be anything. `obtain`'s payload doesn't have to be destructured either -- the
+-- plain name pattern `obtain x :=` used below is enough.
 
 -- Example 1: typecheck error inside branch of `first` gets discarded, as expected
 
-inductive Field | age | name
-
-def Field.type : Field → Type
-  | .age => Nat
-  | .name => String
-
-theorem reads_age (n : Nat) (h : n = n) : ∃ m, m = n := ⟨n, h⟩
-
-example (f : Field) (v : f.type) (hv : v = v) : ∃ y : f.type, y = v := by
-  cases f <;>
-    first
-    | (obtain ⟨m, hm⟩ := reads_age (h := hv)
-       exact ⟨m, hm⟩)
-    -- .name case: `hv : v = v` for `v : String`, but `reads_age` only
-    -- accepts `n = n` for `n : Nat` -- a typecheck error, but one `first`
-    -- discards cleanly, falling through to the line below.
+example : True := by
+  first
+    | (have x := (True.intro : Nat)
+       trivial)
     | dbg_trace "fell through into sorry case" <;> sorry
 
 
 -- Example 2: seems to be "the same" setup, but typecheck error inside branch
 -- of `first` fails the whole `first`. Unexpected!
 
-structure Database where
-  age : Nat := 0
-
-inductive Outcome
-  | done (db : Database)
-
-def Holds (o : Outcome) (final : Database) : Prop :=
-  match o with
-  | .done result => result = final
-
-inductive Column | age
-
-def Column.interp
-    (c : Column) (db : Database) (ret : Nat → Database → Outcome) : Outcome :=
-  match c with
-  | .age => ret db.age db
-
-theorem Column.interp_reaches
-    (c : Column) (db : Database) (ret : Nat → Database → Outcome)
-    (final : Database) (h : Holds (c.interp db ret) final) :
-    ∃ (a : Nat) (db' : Database), db' = db ∧
-      Holds (ret a db') final := by
-  cases c with
-  | age => exact ⟨_, db, rfl, h⟩
-
--- The one supported "command": look up the age column. Applying
--- `Column.interp_reaches` to `h` below requires unifying against
--- `lookup.interp db ret`, which only reduces through this `match`.
-inductive Command | lookup
-
-def lookup (c : Command) (db : Database) (next : Database → Outcome) : Outcome :=
-  match c with
-  | .lookup => Column.age.interp db (fun _ db => next db)
-
-example (db : Database) (final : Database)
-    (h : Holds (lookup .lookup db (fun db' => .done db')) final) : True := by
+example : True := by
   first
-    | (obtain ⟨a, db', hdb, h⟩ :=
-         Column.interp_reaches _ _ _ _ h -- type error
-       sorry)
+    | (obtain x := (True.intro : Nat)
+       trivial)
     | dbg_trace "fell through into sorry case" <;> sorry
 
-example (db : Database) (final : Database)
-    (h : Holds (lookup .lookup db (fun db' => .done db')) final) : True := by
-  first
-    | (obtain ⟨a, db', hdb, h⟩ :=
-         Column.interp_reaches _ _ _ _ True.intro -- type error
-       sorry)
-    | dbg_trace "fell through into sorry case" <;> sorry
 
-example (db : Database) (final : Database)
-    (h : Holds (.done db) final) : True := by
-  first
-    | (obtain ⟨a, db', hdb, h⟩ :=
-         Column.interp_reaches _ _ _ _ True.intro -- type error
-       sorry)
-    | dbg_trace "fell through into sorry case" <;> sorry
-
-example (db : Database) (final : Database) : True := by
-  first
-    | (obtain ⟨a, db', hdb, h⟩ :=
-         Column.interp_reaches _ _ _ _ True.intro -- type error
-       sorry)
-    | dbg_trace "fell through into sorry case" <;> sorry
+-- Note: `obtain` does not *always* swallow the error this way, which is why
+-- earlier versions of this file had an Example 1 that used `obtain` and still
+-- got discarded correctly. When the argument's actual type and its expected
+-- type share a head symbol and the expected one still has unassigned
+-- metavariables (e.g. passing `hs : s = s` for `s : String` where `?a = ?b`
+-- over `Nat` is expected), the mismatch is thrown and `first` discards it as
+-- in Example 1. It is the mismatches that `obtain` reports as success --
+-- like the one above -- that escape `first`.
