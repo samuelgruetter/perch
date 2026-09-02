@@ -72,9 +72,9 @@ example (sh : Shape) (w : sh.thing) (hn : w = foo w) : ∃ y : sh.thing, y = w :
 -- Example 2: seems to be "the same" setup, but typecheck error inside branch of `first`
 -- fails the whole `first`. Unexpected!
 
-example (op : Operation) (s : MachineData)
+example (s : MachineData)
     (final : MachineData)
-    (hfinal : Effects.Exists (Operation.interp op s (fun s' => .done s')) final) :
+    (hfinal : Effects.Exists (Operation.interp .not s (fun s' => .done s')) final) :
     True := by
   first
     | (obtain ⟨a, s', hregs, hfinal⟩ :=
