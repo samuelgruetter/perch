@@ -79,7 +79,7 @@ example (op : Operation) (s : MachineData)
   cases op <;>
     first
     | (obtain ⟨a, s', hregs, hfinal⟩ :=
-         RegOrMem.interp_reaches (hfinal := hfinal)
+         RegOrMem.interp_reaches _ _ _ _ hfinal
          --                                                  ^^^^^^ type error
        sorry)
     | sorry
