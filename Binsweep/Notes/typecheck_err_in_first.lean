@@ -76,8 +76,7 @@ example (op : Operation) (s : MachineData)
     (final : MachineData)
     (hfinal : Effects.Exists (Operation.interp op s (fun s' => .done s')) final) :
     True := by
-  cases op <;>
-    first
+  first
     | (obtain ⟨a, s', hregs, hfinal⟩ :=
          RegOrMem.interp_reaches _ _ _ _ hfinal
          --                                                  ^^^^^^ type error
