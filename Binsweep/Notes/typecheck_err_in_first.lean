@@ -19,9 +19,6 @@ namespace Reg
 def base {w} (r : Reg w) : Reg64 := match r with | .low r _ => r
 end Reg
 
-class AddressSize where address_size : Width
-class Labels where label : String → Int64
-
 inductive RegOrMem (w : Width) | reg (r : Reg w)
 abbrev Dst := RegOrMem
 
@@ -68,7 +65,7 @@ def Effects.Exists (es : Effects) (final : MachineData × Int64) : Prop :=
 
 abbrev MachineState := MachineData × Int64
 
-def RegOrMem.interp {w} [Labels] [AddressSize]
+def RegOrMem.interp {w}
   (o : RegOrMem w) (s : MachineData) (p : Std.Rco Int64)
   (ret : w.type → MachineData → Effects) :=
   match o with
@@ -77,17 +74,17 @@ def RegOrMem.interp {w} [Labels] [AddressSize]
 def MachineData.setReg (s : MachineData) {w} (r : Reg w) (v : w.type) : MachineData :=
   { s with regs := s.regs.set r v }
 
-def MachineData.set {w} [Labels] [AddressSize] (s : MachineData) (d : Dst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects) : Effects :=
+def MachineData.set {w} (s : MachineData) (d : Dst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects) : Effects :=
   match d with
   | .reg r => ret (s.setReg r v)
 
-def Operation.interp [Labels] [address_size : AddressSize]
+def Operation.interp
   {w} (i : Operation w) (p : Std.Rco Int64) (s : MachineData)
   (next : MachineData → Effects) (jmp : Int64 → MachineData → Effects) : Effects :=
   match i with
   | .not dst => dst.interp s p (fun a s => let v := ~~~a; s.set dst v p next)
 
-theorem RegOrMem.interp_reaches {w : Width} [Labels] [AddressSize]
+theorem RegOrMem.interp_reaches {w : Width}
     (o : RegOrMem w) (s : MachineData) (p : Std.Rco Int64) (ret : w.type → MachineData → Effects)
     (final : MachineState) (hfinal : Effects.Exists (o.interp s p ret) final) :
     ∃ (a : w.type) (s' : MachineData), s'.regs = s.regs ∧
@@ -131,7 +128,7 @@ example (sh : Shape) (w : sh.thing) (hn : w = foo w) : ∃ y : sh.thing, y = w :
 -- Example 2: seems to be "the same" setup, but typecheck error inside branch of `first`
 -- fails the whole `first`. Unexpected!
 
-example [Labels] [address_size : AddressSize] {w : Width}
+example {w : Width}
     (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
     (final : MachineState)
     (hfinal : Effects.Exists
