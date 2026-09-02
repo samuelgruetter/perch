@@ -10,7 +10,7 @@ namespace Width
 abbrev type (w : Width) : Type := BitVec w.bits
 end Width
 
-inductive Reg64 | rax | rbx deriving BEq, DecidableEq
+inductive Reg64 | rax deriving BEq, DecidableEq
 
 inductive Reg : Width → Type
   | low (_ : Reg64) (w : Width) : Reg w
@@ -25,20 +25,8 @@ class Labels where label : String → Int64
 inductive RegOrMem (w : Width) | reg (r : Reg w)
 abbrev Dst := RegOrMem
 
-inductive Operand (w : Width) | regOrMem (_ : RegOrMem w)
-
 inductive Operation (w : Width)
-  | mov (_ : Dst w) (src : Operand w)
   | not (_ : Dst w)
-
-inductive Instr
-  | regular (address_size : Width) (operation_size : Width) (operation : Operation operation_size)
-
-def written_regs (instr : Instr) : List Reg64 :=
-  match instr with
-  | .regular _ _ op =>
-    match op with
-    | .mov dst _ | .not dst => match dst with | .reg r => [r.base]
 
 instance : Coe UInt64 (BitVec 64) := ⟨UInt64.toBitVec⟩
 
@@ -51,15 +39,14 @@ def BitVec.replaceLow {w n} (old : BitVec w) (new : BitVec n) : BitVec w :=
 
 structure Reg64s where
   rax : UInt64 := 0
-  rbx : UInt64 := 0
 
 def Reg64s.get64 (s : Reg64s) (r : Reg64) : Width.W64.type := UInt64.toBitVec (match r with
-  | .rax => s.rax | .rbx => s.rbx)
+  | .rax => s.rax)
 
 def Reg64s.set64 (regs : Reg64s) (r : Reg64) (v : Width.W64.type) : Reg64s :=
   let v := UInt64.ofBitVec v
   match r with
-  | .rax => { regs with rax := v } | .rbx => { regs with rbx := v }
+  | .rax => { regs with rax := v }
 
 def Reg64s.get (s : Reg64s) {w} (r : Reg w) : w.type :=
   (s.get64 r.base).take w.bits
@@ -94,17 +81,10 @@ def MachineData.set {w} [Labels] [AddressSize] (s : MachineData) (d : Dst w) (v 
   match d with
   | .reg r => ret (s.setReg r v)
 
-def Operand.interp {w} [Labels] [AddressSize]
-  (o : Operand w) (s : MachineData) (p : Std.Rco Int64)
-  (ret : w.type → MachineData → Effects) :=
-  match o with
-  | regOrMem rm => rm.interp s p ret
-
 def Operation.interp [Labels] [address_size : AddressSize]
   {w} (i : Operation w) (p : Std.Rco Int64) (s : MachineData)
   (next : MachineData → Effects) (jmp : Int64 → MachineData → Effects) : Effects :=
   match i with
-  | .mov dst src => src.interp s p (fun val s => s.set dst val p next)
   | .not dst => dst.interp s p (fun a s => let v := ~~~a; s.set dst v p next)
 
 theorem RegOrMem.interp_reaches {w : Width} [Labels] [AddressSize]
@@ -114,43 +94,6 @@ theorem RegOrMem.interp_reaches {w : Width} [Labels] [AddressSize]
       Effects.Exists (ret a s') final := by
   cases o with
   | reg r => exact ⟨_, s, rfl, hfinal⟩
-
-theorem Operand.interp_reaches {w : Width} [Labels] [AddressSize]
-    (o : Operand w) (s : MachineData) (p : Std.Rco Int64) (ret : w.type → MachineData → Effects)
-    (final : MachineState) (hfinal : Effects.Exists (o.interp s p ret) final) :
-    ∃ (a : w.type) (s' : MachineData), s'.regs = s.regs ∧
-      Effects.Exists (ret a s') final := by
-  cases o with
-  | regOrMem rm => exact RegOrMem.interp_reaches rm s p ret final hfinal
-
-theorem Reg64s.get64_set64_of_ne {regs : Reg64s} {r r' : Reg64} (h : r' ≠ r) (v : UInt64) :
-    (regs.set64 r v).get64 r' = regs.get64 r' := by
-  cases r <;> cases r' <;> simp_all [Reg64s.set64, Reg64s.get64]
-
-theorem Reg64s.get64_set_of_ne {w : Width} {regs : Reg64s} (rd : Reg w) (v : w.type) {r : Reg64}
-    (h : r ≠ rd.base) : (regs.set rd v).get64 r = regs.get64 r := by
-  cases rd with
-  | low r64 _ =>
-      simp only [Reg.base] at h
-      cases w <;> simp only [Reg64s.set] <;> exact Reg64s.get64_set64_of_ne h _
-
-theorem MachineData.setReg_get64_of_ne {w : Width} (s : MachineData) (rd : Reg w) (v : w.type)
-    {r : Reg64} (h : r ≠ rd.base) : (s.setReg rd v).regs.get64 r = s.regs.get64 r :=
-  Reg64s.get64_set_of_ne rd v h
-
-theorem Reg64.ne_of_beq_eq_false {a b : Reg64} (h : (a == b) = false) : a ≠ b := by
-  cases a <;> cases b <;> first | decide | exact absurd h (by decide)
-
-theorem MachineData.set_get64_of_ne {w : Width} [Labels] [AddressSize]
-    (d : Dst w) (s : MachineData) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects)
-    (r : Reg64) (hd : ∀ rd, d = .reg rd → r ≠ rd.base)
-    (final : MachineState) (hfinal : Effects.Exists (MachineData.set s d v p ret) final) :
-    ∃ s', s'.regs.get64 r = s.regs.get64 r ∧ Effects.Exists (ret s') final := by
-  cases d with
-  | reg rd => exact ⟨_, MachineData.setReg_get64_of_ne s rd v (hd rd rfl), hfinal⟩
-
-theorem Effects.exists_done {a final : MachineState} (h : Effects.Exists (.done a) final) :
-    final = a := h.symm
 
 
 -- Example 1: typecheck error inside branch of `first` gets discarded, as expected
@@ -189,30 +132,16 @@ example (sh : Shape) (w : sh.thing) (hn : w = foo w) : ∃ y : sh.thing, y = w :
 -- fails the whole `first`. Unexpected!
 
 example [Labels] [address_size : AddressSize] {w : Width}
-    (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64) (r : Reg64)
-    (hr : (written_regs (.regular address_size.address_size w op)).contains r = false)
+    (op : Operation w) (p : Std.Rco Int64) (s : MachineData) (arbitrary_pc : Int64)
     (final : MachineState)
     (hfinal : Effects.Exists
         (Operation.interp op p s (fun s' => .done (s', arbitrary_pc)) (fun pc s' => .done (s', pc)))
         final) :
-    final.1.regs.get64 r = s.regs.get64 r := by
+    True := by
   cases op <;>
     first
-    | (--trace_state
-       --simp only [Operation.interp] at hfinal
-       --trace_state
-       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
+    | (obtain ⟨a, s', hregs, hfinal⟩ :=
          RegOrMem.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
          --                                                  ^^^^^^ type error
        sorry)
-    -- The correct, fully-proven recipe for `mov` (and only `mov`).
-    | (simp only [Operation.interp] at hfinal
-       obtain ⟨a, s', hregs, hstatus, hfinal⟩ :=
-         Operand.interp_reaches (final := final) (hfinal := hfinal) (s := s) (p := p) (o := _) (ret := _)
-       obtain ⟨s'', hget, hfinal⟩ :=
-         MachineData.set_get64_of_ne (final := final) (hfinal := hfinal) (s := _) (p := p) (d := _) (v := _)
-           (r := r) (ret := _)
-           (hd := fun rd hrd => by subst hrd; exact Reg64.ne_of_beq_eq_false (by simpa [written_regs] using hr))
-       rw [Effects.exists_done hfinal]
-       simp [hget, hregs])
     | sorry
