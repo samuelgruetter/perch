@@ -1,25 +1,31 @@
--- Examples 1 and 2 run the very same ill-typed term, `(True.intro : Nat)`,
--- inside the first alternative of the very same `first`. They differ in
--- exactly one token: the tactic used to bind it, `have` vs `obtain`.
---
--- `have` fails, so `first` discards the error and moves on to the next
--- alternative, as expected (Example 1).
---
--- `obtain` does not fail. It recovers from the error, binding `x` to a
--- placeholder, and carries on -- so `first` commits to the alternative that
--- just went wrong, never tries the next one, and the error is still reported
--- and fails the build (Example 2). Unexpected!
---
--- Each alternative below traces where it got to, which is what shows the
--- difference is "did the tactic fail?" rather than anything about the error
--- itself. Running `lake build` prints, from Example 1 and Example 2:
---
---   fell through into sorry case            <- Example 1: `have` failed
---   reached the tactic after the error      <- Example 2: `obtain` did not
---
--- Note the two are exclusive: Example 1 never reaches the tactic after the
--- error, and Example 2 never falls through.
+/-
+I am trying to use `first` to write a proof script to apply to a big
+case distinction, where each of the many cases can be solved by one
+of a small number of recipes.
+For this to work, I need the following to hold:
 
+> If one branch of `first` produces a typing error, the next branch is tried.
+
+This holds in Example 1, but not in Example 2 (which fails with a type mismatch
+error).
+
+Actual behavior of Example 2: It prints
+
+```
+reached the tactic after the error
+```
+
+Desired behavior of Example 2: It should print the same as Example 1, i.e.
+
+```
+fell through into sorry case
+declaration uses `sorry`
+```
+
+Lean version: leanprover/lean4:nightly-2026-08-02
+
+Full context and minimization history: https://github.com/samuelgruetter/perch/commits/typecheck-err-in-first/
+-/
 -- Example 1: typecheck error inside branch of `first` gets discarded, as expected
 
 example : True := by
@@ -40,6 +46,8 @@ example : True := by
        trivial)
     | dbg_trace "fell through into sorry case" <;> sorry
 
+
+-- Additional analysis:
 
 -- The recovery in Example 2 is visible without any `first` at all: the tactic
 -- after the failing `obtain` runs, and `x` is in context with a placeholder
